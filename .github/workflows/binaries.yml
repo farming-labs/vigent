@@ -1,0 +1,420 @@
+# Build the standalone vigent binaries (no Node needed), check each on its own
+# platform, and publish them: archives and SHA256SUMS on the GitHub release, the
+# container image on ghcr.io, the Homebrew formula on the default branch.
+#
+# The binary is the Rust port (crates/vigent, #168): one small file per
+# platform, riftri linked in, built natively on each platform's runner. Run by
+# hand with "bun" ticked, it builds the TypeScript with Bun's runtime inside
+# instead (scripts/build-binary-bun.mjs, 85-110 MB): that build is never
+# published, and it's the one the whole pty suite runs through.
+#
+# Nothing is published yet. To release the Rust binaries with each version:
+#   1. add the tag trigger below:   push: { tags: ["v*"] }
+#   2. set the repository variable PUBLISH_BINARIES to "true"
+name: Binaries
+
+on:
+  workflow_dispatch:
+    inputs:
+      bun:
+        description: "Build the TypeScript with Bun's runtime instead of the Rust binary (85-110 MB; never published)"
+        type: boolean
+        default: false
+  pull_request:
+    paths:
+      - crates/**
+      - scripts/build-binary.mjs
+      - scripts/build-binary-bun.mjs
+      - scripts/export-themes.mjs
+      - scripts/package-binaries.mjs
+      - scripts/homebrew-formula.mjs
+      - src/builtin-themes.ts
+      - install.sh
+      - install.ps1
+      - docker/**
+      - src/standalone.ts
+      - test/standalone.test.mjs
+      - test/standalone-stand-in.test.mjs
+      - .github/workflows/binaries.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: binaries-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  rust:
+    name: Rust ${{ matrix.name }}
+    if: ${{ !inputs.bun }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # x86-64 Rust doesn't need AVX2: the baseline target is the same build
+          - { name: linux-x64, os: ubuntu-24.04, targets: "linux-x64 linux-x64-baseline", triple: x86_64-unknown-linux-gnu, test: true }
+          - { name: linux-arm64, os: ubuntu-24.04-arm, targets: linux-arm64, triple: aarch64-unknown-linux-gnu }
+          - { name: linux-x64-musl, os: ubuntu-24.04, targets: linux-x64-musl, triple: x86_64-unknown-linux-musl }
+          - { name: linux-arm64-musl, os: ubuntu-24.04-arm, targets: linux-arm64-musl, triple: aarch64-unknown-linux-musl }
+          - { name: darwin-arm64, os: macos-latest, targets: darwin-arm64, triple: aarch64-apple-darwin }
+          - { name: darwin-x64, os: macos-latest, targets: darwin-x64, triple: x86_64-apple-darwin }
+          - { name: windows-x64, os: windows-latest, targets: windows-x64, triple: x86_64-pc-windows-msvc }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Rust
+        shell: bash
+        run: |
+          rustup update stable --no-self-update
+          rustup default stable
+          rustup target add ${{ matrix.triple }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/vigent
+          key: ${{ matrix.triple }}
+
+      # the crate's own tests, and its themes still the TypeScript ones
+      - name: Test
+        if: matrix.test
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci
+          node scripts/export-themes.mjs --check
+          (cd crates/vigent && cargo test --locked)
+
+      - name: Build
+        shell: bash
+        run: node scripts/build-binary.mjs --no-pack ${{ matrix.targets }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rust-${{ matrix.name }}
+          path: dist-bin/
+          if-no-files-found: error
+          retention-days: 7
+
+  build:
+    name: Pack every target
+    needs: rust
+    if: ${{ always() && (needs.rust.result == 'success' || (inputs.bun && needs.rust.result == 'skipped')) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      # "true" for the Bun build: the publish jobs refuse to run
+      stand_in: ${{ steps.kind.outputs.stand_in }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Check the version
+        if: github.ref_type == 'tag'
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(node -p 'require("./package.json").version')"
+          if [[ "$GITHUB_REF_NAME" != "v$version" ]]; then
+            echo "tag $GITHUB_REF_NAME doesn't match package.json version $version" >&2
+            exit 1
+          fi
+
+      - uses: actions/download-artifact@v4
+        if: ${{ !inputs.bun }}
+        with:
+          pattern: rust-*
+          path: dist-bin
+          merge-multiple: true
+
+      # artifacts don't keep the executable bit; the archives must have it
+      - name: Pack the Rust builds
+        if: ${{ !inputs.bun }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod 755 dist-bin/vigent-*/vigent 2>/dev/null || true
+          node scripts/package-binaries.mjs
+          test "$(ls dist-bin/*.tar.gz | wc -l)" -eq "$(node scripts/package-binaries.mjs --list | wc -l)"
+
+      - uses: oven-sh/setup-bun@v2
+        if: ${{ inputs.bun }}
+        with:
+          bun-version: 1.4.4
+
+      # the Bun build: it cross-compiles every target on this one runner
+      - name: Build and pack with Bun
+        if: ${{ inputs.bun }}
+        run: |
+          npm ci
+          node scripts/build-binary-bun.mjs --all
+
+      - name: Which build this is
+        id: kind
+        shell: bash
+        run: echo "stand_in=${{ inputs.bun && 'true' || 'false' }}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binaries
+          path: |
+            dist-bin/*.tar.gz
+            dist-bin/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 7
+
+  check:
+    name: Check ${{ matrix.target }}
+    needs: build
+    # the Bun build skips the rust job; that mustn't skip these
+    if: ${{ !cancelled() && needs.build.result == 'success' }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: linux-x64, os: ubuntu-24.04 }
+          - { target: linux-x64-baseline, os: ubuntu-24.04 }
+          - { target: linux-arm64, os: ubuntu-24.04-arm }
+          # macos-14 jobs never got a runner (queued, then cancelled), so the current image
+          - { target: darwin-arm64, os: macos-latest }
+          # no Intel runner: the x64 build runs under Rosetta
+          - { target: darwin-x64, os: macos-latest }
+          # no pty on Windows: the version, the commands, riftri and install.ps1 are checked
+          - { target: windows-x64, os: windows-latest }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # the test's own tools (the terminal emulator, the compiled helpers); the binary under test doesn't use them
+      - name: Install
+        run: npm ci
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: binaries
+          path: dist-bin
+
+      - name: Unpack
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist-bin
+          grep " vigent-${{ matrix.target }}.tar.gz\$" SHA256SUMS | (sha256sum -c - 2>/dev/null || shasum -a 256 -c -)
+          tar -xzf "vigent-${{ matrix.target }}.tar.gz"
+
+      # --version, the commands, an agent in a riftri worktree with no node on PATH, and the installer
+      - name: Test the binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          exe=""; [[ "${{ matrix.target }}" == windows-* ]] && exe=".exe"
+          VIGENT_BINARY="dist-bin/vigent-${{ matrix.target }}/vigent$exe" node --test test/standalone.test.mjs
+
+      # the whole suite with every pty test driving the binary instead of Node: navigation, config,
+      # layout, permissions, worktrees, every engine. The Bun build passes it; it's the Rust port's
+      # finish line (#168, milestone 5), so it runs for the Bun build until then.
+      - name: Every pty test through the binary
+        if: matrix.target == 'linux-x64' && needs.build.outputs.stand_in == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin="$PWD/dist-bin/vigent-${{ matrix.target }}/vigent"
+          VIGENT_TTY_BINARY="$bin" VIGENT_BINARY="$bin" node --test test/*.test.mjs
+
+  check-musl:
+    name: Check ${{ matrix.target }} (Alpine)
+    needs: build
+    # the Bun build skips the rust job; that mustn't skip these
+    if: ${{ !cancelled() && needs.build.result == 'success' }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: linux-x64-musl, os: ubuntu-24.04 }
+          - { target: linux-arm64-musl, os: ubuntu-24.04-arm }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: binaries
+          path: dist-bin
+
+      # a bare Alpine with git: install.sh picks the musl archive by itself, then vigent and riftri run
+      - name: Install and run in Alpine
+        run: |
+          docker run --rm -v "$PWD:/src:ro" alpine:3 sh -euc '
+            apk add --no-cache git libstdc++ libgcc >/dev/null
+            VIGENT_DOWNLOAD_BASE=file:///src/dist-bin sh /src/install.sh 2>&1 | tee /tmp/install.log
+            grep -q "downloading vigent-${{ matrix.target }}.tar.gz" /tmp/install.log
+            ~/.local/bin/vigent --version
+            ~/.local/bin/vigent theme list | grep -q "^tokyonight"
+            if [ -f ~/.vigent/riftri ]; then ~/.vigent/riftri --version; fi
+          '
+
+  image:
+    name: Container image
+    needs: build
+    # the Bun build skips the rust job; that mustn't skip these
+    if: ${{ !cancelled() && needs.build.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: binaries
+          path: dist-bin
+
+      # the build context: each platform's archive, unpacked under Docker's name for it;
+      # amd64 gets the baseline build, so the image also runs on VMs without AVX2
+      - name: Lay out the context
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p context/amd64 context/arm64 unpacked
+          tar -xzf dist-bin/vigent-linux-x64-baseline.tar.gz -C unpacked
+          tar -xzf dist-bin/vigent-linux-arm64.tar.gz -C unpacked
+          cp -R unpacked/vigent-linux-x64-baseline/. context/amd64/
+          cp -R unpacked/vigent-linux-arm64/. context/arm64/
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build for this runner and try it
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker buildx build --load -t vigent:check -f docker/Dockerfile context
+          version="$(node -p 'require("./package.json").version')"
+          test "$(docker run --rm vigent:check --version)" = "vigent $version"
+          docker run --rm vigent:check theme list | grep -q '^tokyonight'
+          # a riftri shipped as its own file runs too (a build with riftri inside has none)
+          if [[ -f context/amd64/riftri ]]; then docker run --rm --entrypoint /opt/vigent/riftri vigent:check --version; fi
+
+  release:
+    name: Attach to the release
+    # never the Bun stand-in, even when the workflow is started by hand on a tag with PUBLISH_BINARIES set
+    if: github.ref_type == 'tag' && vars.PUBLISH_BINARIES == 'true' && needs.build.outputs.stand_in != 'true'
+    needs: [build, check, check-musl, image]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: binaries
+          path: dist-bin
+
+      - name: Upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes
+          gh release upload "$GITHUB_REF_NAME" dist-bin/*.tar.gz dist-bin/SHA256SUMS --clobber
+
+  # After the release has its archives: a failed push here doesn't hold them back.
+  image-push:
+    name: Push the container image
+    if: github.ref_type == 'tag' && vars.PUBLISH_BINARIES == 'true'
+    needs: release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: binaries
+          path: dist-bin
+
+      - name: Lay out the context
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p context/amd64 context/arm64 unpacked
+          tar -xzf dist-bin/vigent-linux-x64-baseline.tar.gz -C unpacked
+          tar -xzf dist-bin/vigent-linux-arm64.tar.gz -C unpacked
+          cp -R unpacked/vigent-linux-x64-baseline/. context/amd64/
+          cp -R unpacked/vigent-linux-arm64/. context/arm64/
+
+      # the arm64 image's apt-get runs emulated
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Push
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="ghcr.io/$(echo "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker buildx build --push --platform linux/amd64,linux/arm64 \
+            -t "$image:${GITHUB_REF_NAME#v}" -t "$image:latest" \
+            --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+            -f docker/Dockerfile context
+
+  # The repository is its own Homebrew tap: Formula/vigent.rb on the default branch,
+  # rewritten for each release with the new archives' checksums.
+  homebrew:
+    name: Update the Homebrew formula
+    if: github.ref_type == 'tag' && vars.PUBLISH_BINARIES == 'true'
+    needs: release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: binaries
+          path: dist-bin
+
+      - name: Write and commit the formula
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          if [[ "$(node -p 'require("./package.json").version')" != "$version" ]]; then
+            echo "the default branch is no longer at $version; not touching the formula" >&2
+            exit 0
+          fi
+          node scripts/homebrew-formula.mjs Formula/vigent.rb
+          ruby -c Formula/vigent.rb
+          git add Formula/vigent.rb
+          if git diff --cached --quiet; then echo "the formula is already at $version"; exit 0; fi
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -m "chore(homebrew): vigent $version"
+          git push

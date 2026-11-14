@@ -1408,7 +1408,9 @@ export class App implements Component {
 			}
 			if (text && s) {
 				const waiting = s.submit(text);
-				if (waiting > 0) this.setMessage(`queued: '${s.name}' gets it after the current run (${waiting} waiting)`, "Comment");
+				// a held agent has no current run: it's waiting for its worktree (made in the background, or a setup hook)
+				const after = s.holdReason ? "once its worktree is ready" : "after the current run";
+				if (waiting > 0) this.setMessage(`queued: '${s.name}' gets it ${after} (${waiting} waiting)`, "Comment");
 				this.scrollOffset = 0;
 			}
 		} else if (this.mode === "COMMAND") {
@@ -4909,7 +4911,9 @@ export class App implements Component {
 			blocksBefore += c.blocks;
 		});
 		out = lines;
-		if (s?.thinking) {
+		// from the moment a prompt goes out, not only once the model opens a thinking block:
+		// a CLI takes a few seconds to start, and an empty pane looks stuck
+		if (s?.thinking || (s?.state === "running" && s.items.at(-1)?.kind === "user")) {
 			push("", "");
 			push(P.p("Comment", "thinking…"), "thinking…");
 		}
