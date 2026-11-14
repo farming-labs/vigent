@@ -3,18 +3,11 @@
 //! (transparent, termguicolors). src/app.ts openThemePicker, saveTheme,
 //! execHighlight, applyColorMode; src/config.ts applySetCommand.
 
-use crossterm::event::KeyEvent;
-use ratatui::Frame;
-use ratatui::layout::Rect;
-use ratatui::style::Style;
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Clear, Paragraph};
-
+use crate::actions::windows::open_picker;
 use crate::app::App;
 use crate::config::{self, HiSpec, Transparent, UiOptions, Val};
-use crate::settings::truncate;
 use crate::theme::{self, Attr, ThemeDef};
-use crate::ui::text::width;
+use crate::ui::picker::{Choice, Live, Look, Picker, Place};
 use crate::vimcolors::{HiCommand, parse_highlight_command};
 
 /// The options now, applied to how the theme is drawn (24-bit color, transparency).
@@ -277,43 +270,26 @@ pub fn exec_set(app: &mut App, arg: &str) {
 // the theme picker
 // ---------------------------------------------------------------------------
 
-const VISIBLE: usize = 14;
-
 /// `:colorscheme` with no name: pick a theme with a live preview (src/picker.ts ThemePicker).
-pub struct ThemePicker {
-    themes: Vec<String>,
-    current: String,
-    original: ThemeDef,
-    query: String,
-    searching: bool,
-    index: usize,
-    scroll: usize,
-}
-
-impl ThemePicker {
-    fn filtered(&self) -> Vec<String> {
-        if self.query.is_empty() {
-            return self.themes.clone();
-        }
-        let q = self.query.to_lowercase();
-        // fuzzy: the query's letters in order
-        self.themes
-            .iter()
-            .filter(|t| {
-                let mut it = t.to_lowercase().chars().collect::<Vec<_>>().into_iter();
-                q.chars().all(|c| it.any(|x| x == c))
-            })
-            .cloned()
-            .collect()
-    }
-}
-
 pub fn open_theme_picker(app: &mut App) {
-    app.seq.reset();
-    let themes = theme::list();
-    let current = app.theme.name.clone();
-    let index = themes.iter().position(|t| *t == current).unwrap_or(0);
-    app.cfg.picker = Some(ThemePicker { scroll: (index + 1).saturating_sub(VISIBLE), themes, current, original: app.theme.def.clone(), query: String::new(), searching: false, index });
+    let original = app.theme.def.clone();
+    let items = theme::list().iter().map(|t| Choice::new(t, None, None)).collect();
+    let mut p = Picker::new(
+        "Colorschemes",
+        Some(items),
+        Some(app.theme.name.clone()),
+        false,
+        Box::new(move |app, pick| match pick {
+            Some(name) => {
+                preview(app, &name);
+                app.say(format!("colorscheme {name}"), "ModeMsg");
+            }
+            None => app.theme.set_def(original),
+        }),
+    );
+    p.place = Place::Center { width: 64 };
+    p.live = Some(Live { preview, look });
+    open_picker(app, p);
 }
 
 fn preview(app: &mut App, name: &str) {
@@ -326,172 +302,16 @@ fn preview(app: &mut App, name: &str) {
     }
 }
 
-pub fn picker_key(app: &mut App, k: KeyEvent) {
-    let Some(token) = crate::keys::token_from_event(&k) else { return };
-    picker_feed(app, &token);
-}
-
-pub fn picker_feed(app: &mut App, key: &str) {
-    let Some(mut p) = app.cfg.picker.take() else { return };
-    let items = p.filtered();
-    let done = |app: &mut App, p: &ThemePicker, pick: Option<String>| match pick {
-        Some(name) => {
-            preview(app, &name);
-            app.say(format!("colorscheme {name}"), "ModeMsg");
-        }
-        None => app.theme.set_def(p.original.clone()),
-    };
-    let mut moved: Option<isize> = None;
-    match key {
-        "<C-c>" => return done(app, &p, None),
-        "<CR>" => return done(app, &p, items.get(p.index).cloned()),
-        "<Down>" | "<Tab>" | "<C-n>" | "<C-j>" => moved = Some(1),
-        "<Up>" | "<S-Tab>" | "<C-p>" | "<C-k>" => moved = Some(-1),
-        _ if p.searching => match key {
-            "<Esc>" => p.searching = false,
-            "<BS>" => {
-                if p.query.pop().is_none() {
-                    p.searching = false;
-                } else {
-                    reset(app, &mut p);
-                }
-            }
-            "<C-u>" => {
-                p.query.clear();
-                reset(app, &mut p);
-            }
-            k => {
-                if let Some(t) = crate::keys::token_text(k) {
-                    p.query.push_str(&t);
-                    reset(app, &mut p);
-                }
-            }
-        },
-        "j" => moved = Some(1),
-        "k" => moved = Some(-1),
-        "g" => moved = Some(-(p.index as isize)),
-        "G" => moved = Some(items.len() as isize - 1 - p.index as isize),
-        "/" => p.searching = true,
-        "q" => return done(app, &p, None),
-        "<Esc>" => {
-            if p.query.is_empty() {
-                return done(app, &p, None);
-            }
-            p.query.clear();
-            reset(app, &mut p);
-        }
-        _ => {}
+/// A theme's colors and tags in the picker.
+fn look(name: &str) -> Option<Look> {
+    let d = theme::load_def(name).ok()?;
+    let pal = theme::extract_palette(&d);
+    let colors = ["bg", "red", "yellow", "green", "cyan", "blue", "magenta"].iter().map(|k| pal.get(k).unwrap_or("#000000").to_string()).collect();
+    let mut tags = vec![if d.background.as_deref() == Some("light") { "light" } else { "dark" }];
+    if d.transparent {
+        tags.push("transparent");
     }
-    if let Some(d) = moved
-        && !items.is_empty()
-    {
-        let n = items.len() as isize;
-        p.index = ((p.index as isize + d + n) % n) as usize;
-        if p.index < p.scroll {
-            p.scroll = p.index;
-        }
-        if p.index >= p.scroll + VISIBLE {
-            p.scroll = p.index + 1 - VISIBLE;
-        }
-        preview(app, &items[p.index]);
-    }
-    app.cfg.picker = Some(p);
-}
-
-fn reset(app: &mut App, p: &mut ThemePicker) {
-    p.index = 0;
-    p.scroll = 0;
-    if let Some(first) = p.filtered().first() {
-        preview(app, first);
-    }
-}
-
-pub fn draw_picker(f: &mut Frame, app: &App, area: Rect) {
-    let Some(p) = &app.cfg.picker else { return };
-    let t = &app.theme;
-    let ascii = app.config.ui.icons == "ascii";
-    let (tl, tr, bl, br, hz, vt, lt, rt, cur, prompt) = if ascii {
-        ("+", "+", "+", "+", "-", "|", "+", "+", "*", ">")
-    } else if app.config.ui.icons == "nerd" {
-        ("╭", "╮", "╰", "╯", "─", "│", "├", "┤", "\u{f00c}", "\u{f002}")
-    } else {
-        ("╭", "╮", "╰", "╯", "─", "│", "├", "┤", "●", "❯")
-    };
-    let w = 64.min(area.width.saturating_sub(4)).max(20) as usize;
-    let inner = w - 2;
-    let bg = t.hl("NormalFloat").bg;
-    let on = |g: &str, b| Style { bg: b, ..t.hl(g) };
-    let border = on("FloatBorder", bg);
-    let row = |content: Vec<Span<'static>>, used: usize, rbg| {
-        let mut s = vec![Span::styled(vt.to_string(), border)];
-        s.extend(content);
-        s.push(Span::styled(" ".repeat(inner.saturating_sub(used)), on("NormalFloat", rbg)));
-        s.push(Span::styled(vt.to_string(), border));
-        Line::from(s)
-    };
-    let items = p.filtered();
-    let title = " Colorschemes ";
-    let keys = if p.searching { "type to filter · Esc done" } else { "j/k move · Enter pick · q close" };
-    let count = format!(" {}/{} · {keys} ", if items.is_empty() { 0 } else { p.index + 1 }, items.len());
-    let mut lines = vec![Line::from(vec![Span::styled(format!("{tl}{hz}"), border), Span::styled(title, on("FloatTitle", bg)), Span::styled(format!("{}{tr}", hz.repeat(inner.saturating_sub(1 + width(title)))), border)])];
-    if p.searching {
-        let used = width(prompt) + 2 + width(&p.query) + 1;
-        lines.push(row(vec![Span::styled(format!(" {prompt} "), on("Title", bg)), Span::styled(p.query.clone(), on("NormalFloat", bg)), Span::styled(" ", t.hl("PmenuSel"))], used, bg));
-    } else {
-        let hint = truncate(&if p.query.is_empty() { "/ to search".to_string() } else { format!("/{}", p.query) }, inner.saturating_sub(4), "…");
-        let used = width(&hint) + 3;
-        lines.push(row(vec![Span::styled(format!(" {prompt} {hint}"), on("Comment", bg))], used, bg));
-    }
-    lines.push(Line::from(Span::styled(format!("{lt}{}{rt}", hz.repeat(inner)), border)));
-    let sel_bg = t.hl("PmenuSel").bg.or(t.hl("Visual").bg);
-    for i in 0..VISIBLE {
-        let Some(name) = items.get(p.scroll + i) else {
-            lines.push(row(vec![], 0, bg));
-            continue;
-        };
-        let selected = p.scroll + i == p.index;
-        let rbg = if selected { sel_bg } else { bg };
-        let group = if selected { "PmenuSel" } else { "NormalFloat" };
-        let marker = if *name == p.current { format!("{cur} ") } else { "  ".into() };
-        let look = theme::load_def(name).ok();
-        let (colors, tags) = match &look {
-            Some(d) => {
-                let pal = theme::extract_palette(d);
-                let colors: Vec<String> = ["bg", "red", "yellow", "green", "cyan", "blue", "magenta"].iter().map(|k| pal.get(k).unwrap_or("#000000").to_string()).collect();
-                let mut tags = vec![if d.background.as_deref() == Some("light") { "light" } else { "dark" }];
-                if d.transparent {
-                    tags.push("transparent");
-                }
-                (colors, tags.join(" "))
-            }
-            None => (vec![], String::new()),
-        };
-        let swatch_w = if look.is_some() { colors.len() * 2 + 1 } else { 0 };
-        let name_w = (inner.saturating_sub(2 + swatch_w + if tags.is_empty() { 0 } else { tags.len() + 1 })).clamp(8, 24);
-        let text = truncate(&format!("{marker}{name}"), name_w, "…");
-        let mut content = vec![Span::styled(format!(" {text}{} ", " ".repeat(name_w.saturating_sub(width(&text)))), on(group, rbg))];
-        let mut used = name_w + 2;
-        if look.is_some() && inner.saturating_sub(used) >= swatch_w {
-            for c in &colors {
-                content.push(Span::styled("  ", t.style_of(&Attr { bg: Some(c.clone()), ..Default::default() })));
-            }
-            content.push(Span::styled(" ", on(group, rbg)));
-            used += swatch_w;
-            if !tags.is_empty() && inner.saturating_sub(used) >= tags.len() {
-                used += tags.len();
-                content.push(Span::styled(tags, on("Comment", rbg)));
-            }
-        }
-        lines.push(row(content, used, rbg));
-    }
-    if items.is_empty() {
-        lines[3] = row(vec![Span::styled("  no match", on("Comment", bg))], 10, bg);
-    }
-    lines.push(Line::from(vec![Span::styled(format!("{bl}{}", hz.repeat(inner.saturating_sub(width(&count) + 1))), border), Span::styled(count.clone(), on("Comment", bg)), Span::styled(format!("{hz}{br}"), border)]));
-    let h = (lines.len() as u16).min(area.height);
-    let r = Rect::new(area.x + (area.width.saturating_sub(w as u16)) / 2, area.y + (area.height - h) / 2, w as u16, h);
-    f.render_widget(Clear, r);
-    f.render_widget(Paragraph::new(lines), r);
+    Some(Look { colors, tags: tags.join(" ") })
 }
 
 #[cfg(test)]
@@ -519,6 +339,8 @@ mod tests {
         assert!(all.starts_with("  sidebar    sidebar_width=40"), "{all}");
     }
 
+    use crate::actions::windows::picker_key;
+
     #[test]
     fn hi_and_themes() {
         let mut a = crate::app::tests::app();
@@ -531,10 +353,10 @@ mod tests {
         exec_theme(&mut a, "theme", "save default");
         assert!(a.message.0.contains("built-in"));
         exec_theme(&mut a, "colorscheme", "");
-        picker_feed(&mut a, "j");
+        picker_key(&mut a, "j");
         assert_ne!(a.theme.name, "nord", "j previews the next one");
-        picker_feed(&mut a, "q");
+        picker_key(&mut a, "q");
         assert_eq!(a.theme.name, "nord", "q puts the old one back");
-        assert!(a.cfg.picker.is_none());
+        assert!(a.windows.picker.is_none());
     }
 }

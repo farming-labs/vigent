@@ -609,8 +609,8 @@ fn on_ui_request(app: &mut App, i: usize, req: Value) {
         if was == State::Running {
             app.sessions[i].state = State::Waiting;
         }
-        let rows = Some(if custom { 3 } else { choices.len().clamp(3, 10) });
-        let done: super::picker::Done = Box::new(move |app, v| {
+        let rows = if custom { 3 } else { choices.len().clamp(3, 10) };
+        let done: crate::ui::picker::Done = Box::new(move |app, v| {
             let answer = match (key, v) {
                 ("confirmed", Some(v)) => json!({"confirmed": v == "yes"}),
                 ("confirmed", None) => json!({"confirmed": false}),
@@ -622,9 +622,10 @@ fn on_ui_request(app: &mut App, i: usize, req: Value) {
                 app.sessions[i].state = was;
             }
         });
-        let mut p = super::picker::Picker::new(&title, Some(choices), "", custom, rows, done);
+        let mut p = crate::ui::picker::Picker::new(&title, Some(choices), None, custom, done);
+        p.rows = rows;
         p.searching = custom;
-        super::picker::open(app, p);
+        crate::actions::windows::open_picker(app, p);
     };
     match method.as_str() {
         "select" => {
