@@ -1,5 +1,5 @@
 /** Facts the site shows in more than one place. */
-export const VERSION = "0.10.1";
+export const VERSION = "0.10.2";
 export const INSTALL = "npm i -g @vigent/cli";
 /** The standalone binary, no Node: the installers are the repo-root files, served by the site (scripts/copy-installers.mjs). */
 export const INSTALL_SH = "curl -fsSL https://vigent.farming-labs.dev/install.sh | sh";
