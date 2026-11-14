@@ -2,7 +2,9 @@
 # Install the standalone vigent: a binary that needs git on the machine, and no
 # Node.
 #
-#   curl -fsSL https://raw.githubusercontent.com/farming-labs/vigent/main/install.sh | sh
+#   curl -fsSL https://vigent.farming-labs.dev/install.sh | sh
+#
+# (the website serves this file as it is in the repository: website/scripts/copy-installers.mjs)
 #
 # It downloads the archive for this machine from the GitHub release, checks it
 # against the release's SHA256SUMS, puts it in ~/.vigent and links `vigent`

@@ -113,11 +113,12 @@ VIGENT_TTY_BINARY=dist-bin/vigent-linux-x64/vigent VIGENT_BINARY=dist-bin/vigent
 | `scripts/export-themes.mjs` | writes `crates/vigent/src/themes.txt` from the TypeScript themes |
 | `scripts/check-glibc.mjs` | fails when a gnu binary needs a newer glibc than it's meant for |
 | `scripts/package-binaries.mjs` | packs each built target and writes `SHA256SUMS` |
+| `website/scripts/copy-installers.mjs` | copies `install.sh` and `install.ps1` into the website's build, which serves them at `vigent.farming-labs.dev/install.sh` and `/install.ps1` |
 | `install.sh` | macOS and Linux: picks the target (libc and its version, AVX2), checks the download, installs to `~/.vigent`, links `vigent` into `~/.local/bin` |
 | `install.ps1` | Windows: the same, into `%LOCALAPPDATA%\vigent`, and adds it to PATH |
-| `scripts/homebrew-formula.mjs` | writes `Formula/vigent.rb` from `SHA256SUMS`, so this repository is its own tap |
+| `scripts/homebrew-formula.mjs` | writes `Formula/vigent.rb` from `SHA256SUMS`, for the tap [farming-labs/homebrew-tap](https://github.com/farming-labs/homebrew-tap) |
 | `docker/Dockerfile` | the binary with git on debian-slim, for `ghcr.io/farming-labs/vigent` |
-| `.github/workflows/binaries.yml` | builds Rust on each platform's own runner and packs it, checks each target on its own platform (musl in Alpine), builds and runs the image; with publishing on, attaches the archives to the release, pushes the image, commits the formula |
+| `.github/workflows/binaries.yml` | builds Rust on each platform's own runner and packs it, checks each target on its own platform (musl in Alpine), builds and runs the image; with publishing on, attaches the archives to the release, pushes the image, commits the formula to the tap |
 
 The workflow's jobs, in order: **rust** (one per platform; the gnu ones with cargo-zigbuild for glibc 2.17, then `check-glibc`) → **build** (pack) → **check** (Linux x64, x64 baseline and arm64, each also in `centos:7`; macOS arm64 and macOS x64 under Rosetta on `macos-latest`, Windows), **check-musl** (Alpine, x64 and arm64) and **image** → **release** → **image-push** and **homebrew**. The last three need a tag and `PUBLISH_BINARIES`, and never run for the Bun build.
 
@@ -128,23 +129,39 @@ To release the Rust binaries with each version:
 1. Add the tag trigger to `.github/workflows/binaries.yml`: `push: { tags: ["v*"] }`.
 2. Set the repository variable `PUBLISH_BINARIES` to `true`.
 
+### The Homebrew tap
+
+The formula lives in its own tap, **farming-labs/homebrew-tap**, so people run `brew install farming-labs/tap/vigent` (Homebrew turns `farming-labs/tap` into that repository). For each release the **homebrew** job checks the tap out with the `HOMEBREW_TAP_TOKEN` secret, writes `Formula/vigent.rb` there with `scripts/homebrew-formula.mjs`, and pushes a commit `vigent <version>` to the tap's default branch. Nothing in this repository is changed, so a protected `main` here doesn't matter. Without the secret the job prints a notice ("Homebrew tap not updated") and does nothing; the release, the archives and the image don't wait for it.
+
+One-time setup, by a maintainer of the `farming-labs` organization:
+
+1. Create the public repository `farming-labs/homebrew-tap`, with a first commit (tick "Add a README"): the job checks it out, and an empty repository has nothing to check out. The formula goes in `Formula/`, which the first release creates.
+2. Create a token that can push to that repository only: a fine-grained personal access token (Settings → Developer settings → Fine-grained tokens), resource owner `farming-labs`, repository access "Only select repositories" → `farming-labs/homebrew-tap`, repository permission **Contents: Read and write** (Metadata: read-only comes with it). If the organization requires approval for fine-grained tokens, approve it. Note its expiry date: an expired token fails the job.
+3. In `farming-labs/vigent` → Settings → Secrets and variables → Actions, add it as the repository secret `HOMEBREW_TAP_TOKEN`.
+
+To check it by hand after a release: `brew install farming-labs/tap/vigent && vigent --version`.
+
 ## How people will install it
 
 Once a release has binaries (none does yet, so these don't work today):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/farming-labs/vigent/main/install.sh | sh
-brew tap farming-labs/vigent https://github.com/farming-labs/vigent && brew install vigent
+curl -fsSL https://vigent.farming-labs.dev/install.sh | sh
+brew install farming-labs/tap/vigent
 docker run --rm -it -v "$PWD:/work" ghcr.io/farming-labs/vigent
 ```
 
 ```powershell
-irm https://raw.githubusercontent.com/farming-labs/vigent/main/install.ps1 | iex
+irm https://vigent.farming-labs.dev/install.ps1 | iex
 ```
+
+Or, with Node 20 or newer, the npm package, which runs every engine: `npm install -g @vigent/cli`.
+
+**The installers on the website are the files in this repository.** `install.sh` and `install.ps1` at the root are the only copies: the website's `dev`, `build` and `preview` scripts run `website/scripts/copy-installers.mjs` first, which copies them into `website/public/` (ignored by git), and Farm serves `public/` at the site's root, as `text/plain` (`routeRules` in `website/farm.config.ts`). So a change to an installer reaches `vigent.farming-labs.dev` with the next deploy of the site, and the archives always come from the GitHub release, never from the site. The build fails when a root installer is missing.
 
 `VIGENT_VERSION=0.9.3` installs that version, and running the installer again updates. The container has no agent CLIs in it: build an image `FROM ghcr.io/farming-labs/vigent` and add the ones you use. The macOS binary isn't signed: installed with `curl` or Homebrew it runs as it is, while one downloaded in a browser has to be allowed in System Settings first.
 
-Still to decide: whether `install.sh` is served from a domain of its own, whether the formula stays in this repository or moves to a tap (the homebrew job pushes to the default branch, which a protected branch refuses), and signing for macOS.
+Still to decide: signing for macOS.
 
 To try a build locally:
 
