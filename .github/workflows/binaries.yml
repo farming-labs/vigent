@@ -370,7 +370,9 @@ jobs:
           docker buildx build --load -t vigent:check -f docker/Dockerfile context
           version="$(node -p 'require("./package.json").version')"
           test "$(docker run --rm vigent:check --version)" = "vigent $version"
-          docker run --rm vigent:check theme list | grep -q '^tokyonight'
+          # into a file first: grep -q stops reading at its first match
+          docker run --rm vigent:check theme list > themes.txt
+          grep -q '^tokyonight' themes.txt
           # a riftri shipped as its own file runs too (a build with riftri inside has none)
           if [[ -f context/amd64/riftri ]]; then docker run --rm --entrypoint /opt/vigent/riftri vigent:check --version; fi
 
