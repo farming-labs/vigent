@@ -1,4 +1,5 @@
 /** Tab completion for the : command line. */
+import { type ModelIndex, modelCompletions } from "./handoff.js";
 import { completeRaceArg } from "./race.js";
 
 /** Every ex command, by the name you'd normally type (short forms still run, they just aren't offered). */
@@ -69,10 +70,16 @@ export interface CompletionSources {
 	engines?: string[];
 	/** what `:race --models` offers: exact model ids, no aliases */
 	models?: string[];
+	/** what `:model` offers: every ready engine's models, with their names */
+	modelIndex?: ModelIndex;
+	/** the engine whose models `:model` offers first (the focused agent's) */
+	modelOwn?: string;
+	/** what `:effort` offers: the levels the focused agent's engine takes */
+	efforts?: string[];
 }
 
 /** The text before the part being completed, and what that part could be. */
-export function completeCommandLine(line: string, sources: CompletionSources): { base: string; items: string[] } {
+export function completeCommandLine(line: string, sources: CompletionSources): { base: string; items: string[]; hints?: string[] } {
 	const m = /^(\s*)(\S*)(\s+)?([\s\S]*)$/.exec(line) ?? ["", "", "", undefined, ""];
 	const [, lead, cmd, gap, arg] = m;
 	if (gap === undefined) return { base: lead, items: EX_COMMANDS.filter((c) => c.startsWith(cmd)) };
@@ -81,6 +88,12 @@ export function completeCommandLine(line: string, sources: CompletionSources): {
 		const r = completeRaceArg(arg, { engines: sources.engines ?? [], models: sources.models ?? [] });
 		return r ? { base: base + r.base, items: r.items } : { base, items: [] };
 	}
+	if (cmd === "model" || cmd === "mo") {
+		// exact ids that start with or contain what's typed, each with its name and version
+		const found = sources.modelIndex ? modelCompletions(arg, sources.modelOwn, sources.modelIndex) : [];
+		return { base, items: found.map((c) => c.id), hints: found.map((c) => c.hint ?? "") };
+	}
+	if (cmd === "effort" || cmd === "think") return { base, items: (sources.efforts ?? []).filter((e) => e.startsWith(arg.toLowerCase())) };
 	const options = AGENT_COMMANDS.has(cmd) ? sources.agents : THEME_COMMANDS.has(cmd) ? sources.themes : cmd === "wincmd" || cmd === "winc" ? WINCMD_KEYS : [];
 	const needle = arg.toLowerCase();
 	return { base, items: options.filter((o) => (AGENT_COMMANDS.has(cmd) ? o.toLowerCase().includes(needle) : o.toLowerCase().startsWith(needle))) };
