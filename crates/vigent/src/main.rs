@@ -51,5 +51,24 @@ mod windows;
 mod worktree;
 
 fn main() {
+    quiet_on_broken_pipe();
     std::process::exit(cli::main(std::env::args().skip(1).collect()));
+}
+
+/// `vigent theme list | head`: when what reads the output stops early, the next
+/// print!/println! panics on the closed pipe, and panic = "abort" turns that into
+/// an abort with a message. End quietly with 0 instead, like ripgrep, so a
+/// pipeline under `set -o pipefail` doesn't fail on it. The screen writes through
+/// ratatui, which returns errors instead of panicking, so this only covers the
+/// commands that print and exit.
+fn quiet_on_broken_pipe() {
+    let next = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let payload = info.payload();
+        let msg = payload.downcast_ref::<String>().map(String::as_str).or_else(|| payload.downcast_ref::<&str>().copied()).unwrap_or("");
+        if msg.starts_with("failed printing to std") && msg.contains("Broken pipe") {
+            std::process::exit(0);
+        }
+        next(info);
+    }));
 }

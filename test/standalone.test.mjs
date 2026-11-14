@@ -13,7 +13,7 @@
  * dist-bin/vigent-<target>/vigent, with its archive and SHA256SUMS in dist-bin.
  */
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -81,6 +81,16 @@ test("the binary knows its version and runs its commands", { skip }, () => {
 	assert.match(run("--help"), /vim-native orchestrator/);
 	const themes = run("theme", "list");
 	for (const t of ["lazyvim", "tokyonight-moon", "default"]) assert.match(themes, new RegExp(`^${t}\\b`, "m"));
+});
+
+test("output into a pipe that's closed early (vigent theme list | head) ends quietly with 0", { skip: skip || (windows ? "a Unix pipe" : false) }, async () => {
+	// the read end closes before vigent writes a line, so its first write finds the pipe closed
+	const child = spawn(binary, ["theme", "list"], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, HOME: tmp, XDG_CONFIG_HOME: path.join(tmp, ".config") } });
+	child.stdout.destroy();
+	let stderr = "";
+	child.stderr.on("data", (d) => (stderr += d));
+	const [code, signal] = await new Promise((resolve) => child.on("close", (c, s) => resolve([c, s])));
+	assert.deepEqual({ code, signal, stderr }, { code: 0, signal: null, stderr: "" }, "no panic, no abort");
 });
 
 // a build with riftri inside (the Rust one links it as a library) ships no second file; :checkhealth below covers both
