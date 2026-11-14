@@ -4,15 +4,16 @@
 //! (the filter stays; Esc again drops it, then closes). With `custom`, Enter
 //! on a search that matches nothing picks the text itself (a model the list
 //! doesn't know). Every picker is one of these: the `@` file picker, `:model`,
-//! `:effort`, `:engine`, a refused tool's question, a pi extension's select.
-//! It's open in `App::windows.picker` (`actions::windows::open_picker`).
+//! `:effort`, `:engine`, a refused tool's question, a pi extension's select,
+//! and, with [`Live`], `:colorscheme`'s (src/picker.ts ThemePicker). It's open
+//! in `App::windows.picker` (`actions::windows::open_picker`).
 
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
 use super::text::{fit, width};
 use crate::app::App;
-use crate::theme::Theme;
+use crate::theme::{Attr, Theme};
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Choice {
@@ -44,6 +45,22 @@ pub enum Place {
 
 pub type Done = Box<dyn FnOnce(&mut App, Option<String>)>;
 
+/// What the theme picker shows after a theme's name: its colors (the background first), then its tags (dark, light, transparent).
+pub struct Look {
+    pub colors: Vec<String>,
+    pub tags: String,
+}
+
+/// The ThemePicker of src/picker.ts (`:colorscheme`): every move previews the
+/// name it lands on, a new filter previews its first match, Enter with nothing
+/// matched closes as Esc does, each row shows the theme's colors, and the
+/// filter is "the letters in order" rather than pi-tui's fuzzy score.
+#[derive(Clone, Copy)]
+pub struct Live {
+    pub preview: fn(&mut App, &str),
+    pub look: fn(&str) -> Option<Look>,
+}
+
 pub struct Picker {
     pub title: String,
     /// None while loading
@@ -60,6 +77,8 @@ pub struct Picker {
     pub back_out: Option<Box<dyn FnOnce(&mut App)>>,
     /// which picker a list loading in the background is for (`actions::windows::fill_picker`)
     pub id: u64,
+    /// the theme picker's live preview
+    pub live: Option<Live>,
 }
 
 impl Picker {
@@ -79,6 +98,7 @@ impl Picker {
             done: Some(done),
             back_out: None,
             id: NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            live: None,
         };
         if let Some(items) = items {
             p.set_items(items);
@@ -95,6 +115,20 @@ impl Picker {
 
     pub fn filtered(&self) -> Vec<Choice> {
         let items = self.items.clone().unwrap_or_default();
+        if self.live.is_some() {
+            if self.query.is_empty() {
+                return items;
+            }
+            // the query's letters in order
+            let q = self.query.to_lowercase();
+            return items
+                .into_iter()
+                .filter(|c| {
+                    let mut it = c.value.to_lowercase().chars().collect::<Vec<_>>().into_iter();
+                    q.chars().all(|x| it.any(|y| y == x))
+                })
+                .collect();
+        }
         if self.query.trim().is_empty() {
             return items;
         }
@@ -147,6 +181,7 @@ impl Picker {
         let inner = w.max(20) - 2;
         let float = t.hl("NormalFloat");
         let bg = float.bg;
+        let on_bg = |g: &str, b| Style { bg: b, ..t.hl(g) };
         let on = |g: &str| {
             let s = t.fg(g);
             match bg {
@@ -191,6 +226,35 @@ impl Picker {
                     let text = fit(&format!(" {heading}"), inner);
                     let n = width(&text);
                     lines.push(row(vec![Span::styled(text, on("Title"))], n, on("NormalFloat")));
+                }
+                Some(Ok(ci)) if self.live.is_some() => {
+                    // a theme: its name, a strip of its own colors, then its tags
+                    let c = &items[*ci];
+                    let selected = *ci == self.index;
+                    let row_bg = if selected { t.hl("PmenuSel").bg.or(t.hl("Visual").bg) } else { bg };
+                    let group = if selected { "PmenuSel" } else { "NormalFloat" };
+                    let marker = if Some(&c.value) == self.current.as_ref() { format!("{cur_mark} ") } else { "  ".into() };
+                    let look = self.live.and_then(|l| (l.look)(&c.value));
+                    let swatch_w = look.as_ref().map_or(0, |l| l.colors.len() * 2 + 1);
+                    let tags = look.as_ref().map_or("", |l| l.tags.as_str());
+                    let name_w = (inner.saturating_sub(2 + swatch_w + if tags.is_empty() { 0 } else { tags.len() + 1 })).clamp(8, 24);
+                    let text = fit(&format!("{marker}{}", c.value), name_w);
+                    let mut content = vec![Span::styled(format!(" {text}{} ", " ".repeat(name_w.saturating_sub(width(&text)))), on_bg(group, row_bg))];
+                    let mut used = name_w + 2;
+                    if let Some(l) = &look
+                        && inner.saturating_sub(used) >= swatch_w
+                    {
+                        for c in &l.colors {
+                            content.push(Span::styled("  ", t.style_of(&Attr { bg: Some(c.clone()), ..Default::default() })));
+                        }
+                        content.push(Span::styled(" ", on_bg(group, row_bg)));
+                        used += swatch_w;
+                        if !tags.is_empty() && inner.saturating_sub(used) >= tags.len() {
+                            used += tags.len();
+                            content.push(Span::styled(tags.to_string(), on_bg("Comment", row_bg)));
+                        }
+                    }
+                    lines.push(row(content, used, on_bg("NormalFloat", row_bg)));
                 }
                 Some(Ok(ci)) => {
                     let c = &items[*ci];
@@ -244,12 +308,17 @@ pub enum Outcome {
     Stay,
     Done(Option<String>),
     BackOut,
+    /// a live picker's selection changed: preview it
+    Preview(String),
 }
 
 /// One key (in vigent's notation) for the picker.
 pub fn feed(p: &mut Picker, key: &str) -> Outcome {
     let items = p.filtered();
     let n = items.len();
+    let live = p.live.is_some();
+    // the selection moved, or the filter changed under it (a live picker previews what it's on)
+    let mut moved = false;
     let mv = |p: &mut Picker, by: isize| {
         if n > 0 {
             p.index = ((p.index as isize + by).rem_euclid(n as isize)) as usize;
@@ -263,34 +332,43 @@ pub fn feed(p: &mut Picker, key: &str) -> Outcome {
         let picked = items.get(p.index).map(|c| c.value.clone()).or(if p.custom && !q.is_empty() { Some(q) } else { None });
         return match picked {
             Some(v) => Outcome::Done(Some(v)),
+            None if live => Outcome::Done(None),
             None => Outcome::Stay,
         };
     }
     if ["<Down>", "<Tab>", "<C-n>", "<C-j>"].contains(&key) {
         mv(p, 1);
+        moved = true;
     } else if ["<Up>", "<S-Tab>", "<C-p>", "<C-k>"].contains(&key) {
         mv(p, -1);
+        moved = true;
     } else if p.searching {
         match key {
             "<Esc>" => p.searching = false,
             "<BS>" | "<C-h>" => {
                 if !p.query.is_empty() {
                     p.query.pop();
+                    p.index = 0;
+                    moved = true;
                 } else if p.back_out.is_some() {
                     return Outcome::BackOut;
                 } else {
                     p.searching = false;
+                    if !live {
+                        p.index = 0;
+                    }
                 }
-                p.index = 0;
             }
             "<C-u>" => {
                 p.query.clear();
                 p.index = 0;
+                moved = true;
             }
             k => {
                 if let Some(text) = crate::keys::token_text(k) {
                     p.query.push_str(&text);
                     p.index = 0;
+                    moved = true;
                 }
             }
         }
@@ -311,9 +389,13 @@ pub fn feed(p: &mut Picker, key: &str) -> Outcome {
             }
             _ => {}
         }
+        moved = matches!(key, "j" | "k" | "g" | "G" | "<Esc>");
     }
     p.keep_visible();
-    Outcome::Stay
+    match p.filtered().get(p.index) {
+        Some(c) if live && moved => Outcome::Preview(c.value.clone()),
+        _ => Outcome::Stay,
+    }
 }
 
 /// pi-tui's fuzzy match: every query character in order; lower scores are better.

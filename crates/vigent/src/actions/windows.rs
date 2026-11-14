@@ -663,6 +663,11 @@ pub fn picker_key(app: &mut App, token: &str) {
                 b(app);
             }
         }
+        Outcome::Preview(v) => {
+            if let Some(live) = p.live {
+                (live.preview)(app, &v);
+            }
+        }
     }
 }
 
