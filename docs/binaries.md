@@ -1,6 +1,6 @@
 # Standalone binaries
 
-vigent as one file that needs git and nothing else: no Node. The binary is the Rust port ([#168](https://github.com/farming-labs/vigent/issues/168)) in `crates/vigent`, with riftri linked in, so worktrees are copy-on-write and there's no second file. Every release from v0.10.0 on publishes it; the pipeline also builds and checks every platform on each pull request that touches it.
+vigent as one file that needs git and nothing else: no Node. The binary is the Rust port ([#168](https://github.com/farming-labs/vigent/issues/168)) in `crates/vigent`, with riftri linked in, so worktrees are copy-on-write and there's no second file. Every release from v0.10.1 on publishes it; the pipeline also builds and checks every platform on each pull request that touches it.
 
 - [What's in it](#whats-in-it)
 - [Sizes](#sizes)
@@ -123,11 +123,11 @@ VIGENT_TTY_BINARY=dist-bin/vigent-linux-x64/vigent VIGENT_BINARY=dist-bin/vigent
 | `docker/Dockerfile` | the binary with git on debian-slim, for `ghcr.io/farming-labs/vigent` |
 | `.github/workflows/binaries.yml` | builds Rust on each platform's own runner and packs it, checks each target on its own platform (musl in Alpine), builds and runs the image; with publishing on, attaches the archives to the release, pushes the image, commits the formula to the tap |
 
-The workflow's jobs, in order: **rust** (one per platform; the gnu ones with cargo-zigbuild for glibc 2.17, then `check-glibc`; the darwin ones signed, and notarized when the Apple secrets are set) → **build** (pack) → **check** (Linux x64, x64 baseline and arm64, each also in `centos:7`; macOS arm64 and macOS x64 under Rosetta on `macos-latest`, Windows), **check-musl** (Alpine, x64 and arm64) and **image** → **release** → **image-push** and **homebrew**. The last three need a tag and `PUBLISH_BINARIES`, and never run for the Bun build (its `stand_in` output; **release** also refuses any archive over 20 MB, which only the Bun build reaches).
+The workflow's jobs, in order: **rust** (one per platform; the gnu ones with cargo-zigbuild for glibc 2.17, then `check-glibc`; the darwin ones signed, and notarized when the Apple secrets are set) → **build** (pack) → **check** (Linux x64, x64 baseline and arm64, each also in `centos:7`; macOS arm64 and macOS x64 under Rosetta on `macos-latest`, Windows), **check-musl** (Alpine, x64 and arm64) and **image** → **release** → **image-push** and **homebrew**. The last three need a tag, are turned off by `PUBLISH_BINARIES=false`, and never run for the Bun build (its `stand_in` output; **release** also refuses any archive over 20 MB, which only the Bun build reaches).
 
 ## Publishing
 
-A version tag (`v0.10.0`, matching package.json) runs the workflow. It publishes while the repository variable `PUBLISH_BINARIES` is `true`; set it to anything else to build and check a tag without publishing.
+A version tag (`v0.10.1`, matching package.json) runs the workflow, and it publishes. Set the repository variable `PUBLISH_BINARIES` to `false` to build and check tags without publishing.
 
 ### The Homebrew tap
 
@@ -166,7 +166,7 @@ xattr -d com.apple.quarantine ./vigent
 
 ## How people install it
 
-From v0.10.0 on:
+From v0.10.1 on:
 
 ```bash
 curl -fsSL https://vigent.farming-labs.dev/install.sh | sh
@@ -182,7 +182,7 @@ Or, with Node 20 or newer, the npm package, which runs every engine: `npm instal
 
 **The installers on the website are the files in this repository.** `install.sh` and `install.ps1` at the root are the only copies: the website's `dev`, `build` and `preview` scripts run `website/scripts/copy-installers.mjs` first, which copies them into `website/public/` (ignored by git), and Farm serves `public/` at the site's root, as `text/plain` (`routeRules` in `website/farm.config.ts`). So a change to an installer reaches `vigent.farming-labs.dev` with the next deploy of the site, and the archives always come from the GitHub release, never from the site. The build fails when a root installer is missing.
 
-`VIGENT_VERSION=0.10.0` installs that version, and running the installer again updates. The container has no agent CLIs in it: build an image `FROM ghcr.io/farming-labs/vigent` and add the ones you use. On macOS, a binary from a release built without the Apple secrets is only ad-hoc signed: installed with `curl` or Homebrew it runs as it is, while one downloaded in a browser needs `xattr -d com.apple.quarantine ./vigent` first ([Signing for macOS](#signing-for-macos)).
+`VIGENT_VERSION=0.10.1` installs that version, and running the installer again updates. The container has no agent CLIs in it: build an image `FROM ghcr.io/farming-labs/vigent` and add the ones you use. On macOS, a binary from a release built without the Apple secrets is only ad-hoc signed: installed with `curl` or Homebrew it runs as it is, while one downloaded in a browser needs `xattr -d com.apple.quarantine ./vigent` first ([Signing for macOS](#signing-for-macos)).
 
 To try a build locally:
 
