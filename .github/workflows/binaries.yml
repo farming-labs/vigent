@@ -67,9 +67,9 @@ jobs:
           - { name: darwin-x64, os: macos-latest, targets: darwin-x64, triple: x86_64-apple-darwin }
           - { name: windows-x64, os: windows-latest, targets: windows-x64, triple: x86_64-pc-windows-msvc }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
 
@@ -136,7 +136,7 @@ jobs:
           APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
         run: scripts/sign-macos.sh "dist-bin/vigent-${{ matrix.targets }}/vigent"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: rust-${{ matrix.name }}
           path: dist-bin/
@@ -146,16 +146,16 @@ jobs:
   build:
     name: Pack every target
     needs: rust
-    if: ${{ always() && (needs.rust.result == 'success' || (inputs.bun && needs.rust.result == 'skipped')) }}
+    if: ${{ !cancelled() && (needs.rust.result == 'success' || (inputs.bun && needs.rust.result == 'skipped')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     outputs:
       # "true" for the Bun build: the publish jobs refuse to run
       stand_in: ${{ steps.kind.outputs.stand_in }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
 
@@ -170,7 +170,7 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         if: ${{ !inputs.bun }}
         with:
           pattern: rust-*
@@ -185,7 +185,7 @@ jobs:
           set -euo pipefail
           chmod 755 dist-bin/vigent-*/vigent 2>/dev/null || true
           node scripts/package-binaries.mjs
-          test "$(ls dist-bin/*.tar.gz | wc -l)" -eq "$(node scripts/package-binaries.mjs --list | wc -l)"
+          test "$(find dist-bin -maxdepth 1 -name '*.tar.gz' | wc -l)" -eq "$(node scripts/package-binaries.mjs --list | wc -l)"
 
       - uses: oven-sh/setup-bun@v2
         if: ${{ inputs.bun }}
@@ -204,7 +204,7 @@ jobs:
         shell: bash
         run: echo "stand_in=${{ inputs.bun && 'true' || 'false' }}" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: binaries
           path: |
@@ -234,9 +234,9 @@ jobs:
           # no pty on Windows: the version, the commands, riftri and install.ps1 are checked
           - { target: windows-x64, os: windows-latest }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
 
@@ -244,7 +244,7 @@ jobs:
       - name: Install
         run: npm ci
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: binaries
           path: dist-bin
@@ -262,7 +262,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          exe=""; [[ "${{ matrix.target }}" == windows-* ]] && exe=".exe"
+          exe=""; if [[ "$RUNNER_OS" == Windows ]]; then exe=".exe"; fi
           VIGENT_BINARY="dist-bin/vigent-${{ matrix.target }}/vigent$exe" node --test test/standalone.test.mjs
 
       # the signature survived packing: Developer ID and notarized, or ad-hoc
@@ -313,9 +313,9 @@ jobs:
           - { target: linux-x64-musl, os: ubuntu-24.04 }
           - { target: linux-arm64-musl, os: ubuntu-24.04-arm }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: binaries
           path: dist-bin
@@ -340,9 +340,9 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: binaries
           path: dist-bin
@@ -359,7 +359,7 @@ jobs:
           cp -R unpacked/vigent-linux-x64-baseline/. context/amd64/
           cp -R unpacked/vigent-linux-arm64/. context/arm64/
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
       - name: Build for this runner and try it
         shell: bash
@@ -382,10 +382,23 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: binaries
           path: dist-bin
+
+      # a second guard after stand_in: the Rust archives are 1-2 MB, the Bun build's 40-55 MB
+      - name: Refuse the Bun stand-in
+        shell: bash
+        run: |
+          set -euo pipefail
+          for f in dist-bin/*.tar.gz; do
+            size="$(stat -c %s "$f")"
+            if (( size > 20 * 1024 * 1024 )); then
+              echo "::error title=Not the Rust build::$f is $((size / 1024 / 1024)) MB: that's the Bun stand-in, which is never published"
+              exit 1
+            fi
+          done
 
       - name: Upload
         env:
@@ -400,17 +413,17 @@ jobs:
   # After the release has its archives: a failed push here doesn't hold them back.
   image-push:
     name: Push the container image
-    if: github.ref_type == 'tag' && vars.PUBLISH_BINARIES == 'true'
-    needs: release
+    if: github.ref_type == 'tag' && vars.PUBLISH_BINARIES == 'true' && needs.build.outputs.stand_in != 'true'
+    needs: [build, release]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: binaries
           path: dist-bin
@@ -426,8 +439,8 @@ jobs:
           cp -R unpacked/vigent-linux-arm64/. context/arm64/
 
       # the arm64 image's apt-get runs emulated
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v4
 
       - name: Push
         env:
@@ -469,22 +482,22 @@ jobs:
           fi
 
       # this repository at the tag, for scripts/homebrew-formula.mjs and its package.json version
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         if: steps.token.outputs.set == 'true'
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         if: steps.token.outputs.set == 'true'
         with:
           repository: farming-labs/homebrew-tap
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           path: tap
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         if: steps.token.outputs.set == 'true'
         with:
           node-version: 22
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         if: steps.token.outputs.set == 'true'
         with:
           name: binaries
