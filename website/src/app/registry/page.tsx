@@ -35,12 +35,12 @@ export default function RegistryPage() {
               </p>
             </div>
           </div>
-          <L className="install">
+          <L className="rinstall">
             <code>vigent add &lt;name&gt;</code>
             <span className="cm">shows the file and asks first</span>
           </L>
         </section>
-        <div className="l wide store-line">
+        <div className="l wide store-line has-lines">
           <RegistryStore />
         </div>
         <L />
