@@ -1,6 +1,6 @@
 # Build the standalone vigent binaries (no Node needed), check each on its own
 # platform, and publish them: archives and SHA256SUMS on the GitHub release, the
-# container image on ghcr.io, the Homebrew formula on the default branch.
+# container image on ghcr.io, the Homebrew formula in farming-labs/homebrew-tap.
 #
 # The binary is the Rust port (crates/vigent, #168): one small file per
 # platform, riftri linked in, built natively on each platform's runner. Run by
@@ -417,43 +417,65 @@ jobs:
             --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
             -f docker/Dockerfile context
 
-  # The repository is its own Homebrew tap: Formula/vigent.rb on the default branch,
-  # rewritten for each release with the new archives' checksums.
+  # The formula lives in its own tap, farming-labs/homebrew-tap, so people run
+  # `brew install farming-labs/tap/vigent`. Pushing there needs the HOMEBREW_TAP_TOKEN
+  # secret (contents: write on that repository; docs/binaries.md has the setup);
+  # without it this job says so and does nothing, and the release stands as it is.
   homebrew:
-    name: Update the Homebrew formula
-    if: github.ref_type == 'tag' && vars.PUBLISH_BINARIES == 'true'
-    needs: release
+    name: Update the Homebrew tap
+    if: github.ref_type == 'tag' && vars.PUBLISH_BINARIES == 'true' && needs.build.outputs.stand_in != 'true'
+    needs: [build, release]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
-      contents: write
+      contents: read
     steps:
+      - name: Is there a tap token
+        id: token
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        shell: bash
+        run: |
+          if [[ -n "$HOMEBREW_TAP_TOKEN" ]]; then
+            echo "set=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice title=Homebrew tap not updated::The HOMEBREW_TAP_TOKEN secret isn't set, so Formula/vigent.rb wasn't pushed to farming-labs/homebrew-tap. docs/binaries.md has the one-time setup."
+            echo "set=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # this repository at the tag, for scripts/homebrew-formula.mjs and its package.json version
       - uses: actions/checkout@v4
+        if: steps.token.outputs.set == 'true'
+
+      - uses: actions/checkout@v4
+        if: steps.token.outputs.set == 'true'
         with:
-          ref: ${{ github.event.repository.default_branch }}
+          repository: farming-labs/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
 
       - uses: actions/setup-node@v4
+        if: steps.token.outputs.set == 'true'
         with:
           node-version: 22
 
       - uses: actions/download-artifact@v4
+        if: steps.token.outputs.set == 'true'
         with:
           name: binaries
           path: dist-bin
 
-      - name: Write and commit the formula
+      - name: Write and push the formula
+        if: steps.token.outputs.set == 'true'
         shell: bash
         run: |
           set -euo pipefail
           version="${GITHUB_REF_NAME#v}"
-          if [[ "$(node -p 'require("./package.json").version')" != "$version" ]]; then
-            echo "the default branch is no longer at $version; not touching the formula" >&2
-            exit 0
-          fi
-          node scripts/homebrew-formula.mjs Formula/vigent.rb
-          ruby -c Formula/vigent.rb
+          node scripts/homebrew-formula.mjs tap/Formula/vigent.rb
+          ruby -c tap/Formula/vigent.rb
+          cd tap
           git add Formula/vigent.rb
-          if git diff --cached --quiet; then echo "the formula is already at $version"; exit 0; fi
+          if git diff --cached --quiet; then echo "the tap's formula is already at $version"; exit 0; fi
           git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
-            commit -m "chore(homebrew): vigent $version"
+            commit -m "vigent $version"
           git push

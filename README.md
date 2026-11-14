@@ -18,6 +18,7 @@ Or the standalone binary: one file that needs git and no Node. It runs Claude Co
 
 ```bash
 curl -fsSL https://vigent.farming-labs.dev/install.sh | sh     # macOS, Linux
+brew install farming-labs/tap/vigent                           # or Homebrew
 ```
 
 ```powershell
