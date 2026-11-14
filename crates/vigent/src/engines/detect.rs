@@ -53,13 +53,28 @@ pub struct RunResult {
 }
 
 /// Run a command with a timeout and exactly `env`; never fails.
+/// Start `c`, trying again for a moment while the program is "text file busy"
+/// (ETXTBSY): a process forked while the file was still open for writing (a
+/// CLI that was just installed or updated) holds it until it execs.
+fn spawn(c: &mut Command) -> Option<std::process::Child> {
+    const ETXTBSY: i32 = 26; // the same on Linux and macOS
+    for _ in 0..50 {
+        match c.spawn() {
+            Ok(child) => return Some(child),
+            Err(e) if e.raw_os_error() == Some(ETXTBSY) => std::thread::sleep(Duration::from_millis(10)),
+            Err(_) => return None,
+        }
+    }
+    None
+}
+
 pub fn run(cmd: &str, args: &[&str], timeout_ms: u64, env: &Env) -> RunResult {
     // PATH lookup follows the env given, as execFile does
     let program = if cmd.contains('/') { Some(PathBuf::from(cmd)) } else { which(cmd, env) };
     let Some(program) = program else { return RunResult::default() };
     let mut c = Command::new(program);
     c.args(args).env_clear().envs(env).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
-    let Ok(mut child) = c.spawn() else { return RunResult::default() };
+    let Some(mut child) = spawn(&mut c) else { return RunResult::default() };
     let mut out = child.stdout.take().expect("piped");
     let mut err = child.stderr.take().expect("piped");
     let o = std::thread::spawn(move || {
@@ -187,6 +202,22 @@ pub mod tests {
         assert_eq!(detect_pi(&env(&[("PATH", p), ("HOME", h)])).detail, "using your models.json providers");
         let gone = detect_pi(&env(&[("PATH", ""), ("HOME", h)]));
         assert_eq!((gone.installed, gone.detail.as_str(), gone.install.as_deref()), (false, "not installed", Some(super::super::PI_INSTALL)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_program_still_open_for_writing_runs_once_it_is_closed() {
+        let dir = tmp("text-file-busy");
+        let f = fake_bin(&dir, "fresh", "echo ran");
+        // held open for writing, as a process forked mid-write would hold it
+        let held = std::fs::OpenOptions::new().write(true).open(&f).unwrap();
+        let path = dir.to_str().unwrap().to_string();
+        let r = std::thread::spawn(move || run("fresh", &[], 5000, &env(&[("PATH", &path)])));
+        std::thread::sleep(Duration::from_millis(100));
+        drop(held);
+        let r = r.join().unwrap();
+        assert!(r.ok, "it ran once the file was closed: {r:?}");
+        assert_eq!(r.stdout.trim(), "ran");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
