@@ -12,14 +12,22 @@
  *   node scripts/build-binary.mjs linux-x64-musl ...   these (their Rust targets must be installed:
  *                                                      rustup target add <triple>)
  *   node scripts/build-binary.mjs --no-pack <targets>  build only (CI packs every runner's builds together)
+ *   node scripts/build-binary.mjs --glibc 2.17 <targets>
+ *                                                      the linux-gnu targets built against that glibc with
+ *                                                      cargo-zigbuild, so they run on systems that old (the
+ *                                                      release does this); other targets build as usual
  *
- * Needs Rust (https://rustup.rs). The Bun build of the TypeScript is
+ * Needs Rust (https://rustup.rs), and for --glibc cargo-zigbuild and Zig
+ * (cargo install --locked cargo-zigbuild; https://ziglang.org/download or
+ * pip install ziglang). Without --glibc a gnu build needs the glibc of the
+ * machine that built it. The Bun build of the TypeScript is
  * scripts/build-binary-bun.mjs.
  */
 import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseArgs } from "node:util";
 import { exeName, packageAll, TARGETS } from "./package-binaries.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
@@ -50,10 +58,17 @@ function isMusl() {
 	return !process.report?.getReport()?.header?.glibcVersionRuntime;
 }
 
-function build(target, built) {
+/** The cargo command for a triple: with a glibc, a gnu triple goes through cargo-zigbuild as `<triple>.<glibc>`. */
+export function cargoArgs(triple, glibc) {
+	if (glibc && triple.endsWith("-linux-gnu")) return ["zigbuild", "--release", "--locked", "--target", `${triple}.${glibc}`];
+	return ["build", "--release", "--locked", "--target", triple];
+}
+
+function build(target, built, glibc) {
 	const triple = TRIPLES[target];
 	if (!built.has(triple)) {
-		execFileSync("cargo", ["build", "--release", "--locked", "--target", triple], { cwd: crate, stdio: ["ignore", "inherit", "inherit"] });
+		// zigbuild still writes to target/<triple>/, without the glibc suffix
+		execFileSync("cargo", cargoArgs(triple, glibc), { cwd: crate, stdio: ["ignore", "inherit", "inherit"] });
 		built.add(triple);
 	}
 	const dir = path.join(out, `vigent-${target}`);
@@ -64,7 +79,9 @@ function build(target, built) {
 }
 
 function main(argv) {
-	const targets = argv.filter((a) => !a.startsWith("-"));
+	const { values, positionals: targets } = parseArgs({ args: argv, allowPositionals: true, options: { "no-pack": { type: "boolean" }, glibc: { type: "string" } } });
+	const glibc = values.glibc;
+	if (glibc !== undefined && !/^2\.\d+$/.test(glibc)) throw new Error(`--glibc takes a glibc version like 2.17, not '${glibc}'`);
 	if (targets.length === 0) {
 		const host = hostTarget();
 		if (!host) throw new Error(`no target for ${process.platform}-${process.arch}; pick one: ${TARGETS.join(", ")}`);
@@ -76,10 +93,17 @@ function main(argv) {
 	} catch {
 		throw new Error("the Rust build needs Rust: https://rustup.rs (the Bun build: scripts/build-binary-bun.mjs)");
 	}
+	if (glibc && targets.some((t) => TRIPLES[t].endsWith("-linux-gnu"))) {
+		try {
+			execFileSync("cargo", ["zigbuild", "--help"], { stdio: "ignore" });
+		} catch {
+			throw new Error("--glibc needs cargo-zigbuild and Zig: cargo install --locked cargo-zigbuild, and https://ziglang.org/download (or pip install ziglang)");
+		}
+	}
 	fs.mkdirSync(out, { recursive: true });
 	const built = new Set();
-	for (const t of targets) build(t, built);
-	if (!argv.includes("--no-pack")) packageAll(targets, out);
+	for (const t of targets) build(t, built, glibc);
+	if (!values["no-pack"]) packageAll(targets, out);
 }
 
 if (process.argv[1] && fs.realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {

@@ -2,10 +2,12 @@
 /**
  * Write the Homebrew formula for a release: the standalone binaries for macOS
  * and Linux, at the version in package.json, with the checksums from
- * dist-bin/SHA256SUMS (what scripts/package-binaries.mjs wrote).
+ * dist-bin/SHA256SUMS (what scripts/package-binaries.mjs wrote). The Binaries
+ * workflow commits it to the tap, farming-labs/homebrew-tap, as
+ * Formula/vigent.rb: `brew install farming-labs/tap/vigent`.
  *
- *   node scripts/homebrew-formula.mjs               print it
- *   node scripts/homebrew-formula.mjs Formula/vigent.rb   write it there
+ *   node scripts/homebrew-formula.mjs                       print it
+ *   node scripts/homebrew-formula.mjs tap/Formula/vigent.rb write it there
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -30,7 +32,7 @@ export function formula(version, sums, repo = "farming-labs/vigent") {
 		if (!sums[file]) throw new Error(`SHA256SUMS has no line for ${file}`);
 		return `      url "https://github.com/${repo}/releases/download/v${version}/${file}"\n      sha256 "${sums[file]}"`;
 	};
-	return `# Written by scripts/homebrew-formula.mjs for each release; edit that, not this.
+	return `# Written by scripts/homebrew-formula.mjs in farming-labs/vigent for each release; edit that, not this.
 class Vigent < Formula
   desc "Vim-native orchestrator for coding-agent CLIs, each in its own git worktree"
   homepage "https://vigent.farming-labs.dev"

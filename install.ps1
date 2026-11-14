@@ -1,7 +1,9 @@
 # Install the standalone vigent on Windows: an executable that needs git on the
 # machine, and no Node.
 #
-#   irm https://raw.githubusercontent.com/farming-labs/vigent/main/install.ps1 | iex
+#   irm https://vigent.farming-labs.dev/install.ps1 | iex
+#
+# (the website serves this file as it is in the repository: website/scripts/copy-installers.mjs)
 #
 # It downloads the archive from the GitHub release, checks it against the
 # release's SHA256SUMS, puts vigent.exe in %LOCALAPPDATA%\vigent and adds that

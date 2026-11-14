@@ -22,7 +22,6 @@ pub mod gemini;
 pub mod opencode;
 pub mod permissions;
 pub mod pi;
-pub mod picker;
 pub mod run;
 pub mod select;
 
@@ -399,8 +398,6 @@ pub struct Engines {
     pub new_model: BTreeMap<String, String>,
     /// effort for new agents, per engine ([engines.<id>] effort, :effort with no agent open)
     pub new_effort: BTreeMap<String, String>,
-    /// :model, :effort, :engine
-    pub picker: Option<picker::Picker>,
     /// the environment engines run with (and detection reads)
     pub env: Env,
 }
@@ -408,7 +405,7 @@ pub struct Engines {
 impl Default for Engines {
     fn default() -> Self {
         let env = detect::process_env();
-        Engines { infos: quick(&env), preferred: "auto", new_model: BTreeMap::new(), new_effort: BTreeMap::new(), picker: None, env }
+        Engines { infos: quick(&env), preferred: "auto", new_model: BTreeMap::new(), new_effort: BTreeMap::new(), env }
     }
 }
 

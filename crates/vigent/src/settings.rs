@@ -28,10 +28,6 @@ use crate::ui::text::width;
 pub struct ConfigState {
     /// the :settings / :permissions float, when open (keys go to it)
     pub panel: Option<Panel>,
-    /// the :colorscheme picker, when open
-    pub picker: Option<crate::looks::ThemePicker>,
-    /// the :templates picker, when open
-    pub templates: Option<crate::templates::Picker>,
     /// engines whose permissions :permissions changed (what permissions::save writes)
     pub permissions_changed: Vec<String>,
     /// NORMAL-mode keys :settings rebound: lhs -> rhs (None: unmapped), what w writes to [keys.normal]
@@ -177,27 +173,9 @@ pub fn truncate(s: &str, max: usize, tail: &str) -> String {
 // keys
 // ---------------------------------------------------------------------------
 
-/// A Config-area float is open (the panel, the theme picker, the template picker): keys go to it.
+/// The Config area's panel is open: keys go to it.
 pub fn is_open(app: &App) -> bool {
-    app.cfg.panel.is_some() || app.cfg.picker.is_some() || app.cfg.templates.is_some()
-}
-
-/// A key to whichever Config-area float is open.
-pub fn key_any(app: &mut App, k: KeyEvent) {
-    if app.cfg.picker.is_some() {
-        crate::looks::picker_key(app, k)
-    } else if app.cfg.templates.is_some() {
-        crate::templates::key(app, k)
-    } else {
-        key(app, k)
-    }
-}
-
-/// Draw whichever Config-area float is open, over the rest.
-pub fn draw_any(f: &mut Frame, app: &mut App, area: Rect) {
-    draw(f, app, area);
-    crate::looks::draw_picker(f, app, area);
-    crate::templates::draw(f, app, area);
+    app.cfg.panel.is_some()
 }
 
 /// A key while the panel is open.

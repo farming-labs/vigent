@@ -4,7 +4,7 @@ import { Heading, HelpLink, KeyRow, L, Tilde } from "../../components/buffer";
 import { Outline, type OutlineSection } from "../../components/outline";
 import { Tabline } from "../../components/tabline";
 import { VimChrome } from "../../components/vim-chrome";
-import { INSTALL, VERSION } from "../../lib/site";
+import { INSTALL, INSTALL_PS1, INSTALL_SH, VERSION } from "../../lib/site";
 
 // nothing here reads the request, so it renders once at build time
 export const dynamic = "force-static";
@@ -100,6 +100,19 @@ export default function DocsPage() {
             <C># or: vigent ~/code/app</C>
             {"\n"}
             <S>vigent --version</S>
+          </Code>
+          <L>
+            Or the standalone binary, which needs git and no Node (Claude Code agents for now; the npm package runs every engine). It downloads the release from
+            GitHub, checks it, and installs to <S>~/.vigent</S> (<S>%LOCALAPPDATA%\vigent</S> on Windows). Run it again to update.
+          </L>
+          <Code>
+            <S>{INSTALL_SH}</S>
+            {"   "}
+            <C># macOS, Linux</C>
+            {"\n"}
+            <S>{INSTALL_PS1}</S>
+            {"         "}
+            <C># Windows (PowerShell)</C>
           </Code>
           <L>
             vigent opens on a dashboard: <K>i</K> new agent, <K>E</K> engine, <K>m</K> model, <K>t</K> theme, <K>s</K> settings, <K>?</K> every key. Press{" "}

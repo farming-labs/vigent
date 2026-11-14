@@ -162,12 +162,6 @@ pub fn wincmd(key: &str) -> Option<&'static str> {
 
 /// Every key goes here first (App::key). False: the App handles it (a float).
 pub fn key(app: &mut App, k: &KeyEvent) -> bool {
-    if app.windows.picker.is_some() {
-        if let Some(t) = keys::token_from_event(k) {
-            picker_key(app, &t);
-        }
-        return true;
-    }
     if app.float.is_some() {
         return false;
     }
@@ -628,13 +622,32 @@ pub fn completion_as_typed(app: &App) -> Option<(Vec<String>, String)> {
 // the @ file picker, pickers and questions
 // ---------------------------------------------------------------------------
 
-/// A picker on screen; Enter (or Esc) calls `done`.
+/// A picker on screen, over everything else; Enter (or Esc) calls `done`.
 pub fn open_picker(app: &mut App, p: Picker) {
     app.seq.reset();
     app.windows.picker = Some(p);
 }
 
-fn picker_key(app: &mut App, token: &str) {
+/// Fill the open picker `id` with a list that loaded in the background (a newer picker ignores it).
+pub fn fill_picker(app: &mut App, id: u64, items: Vec<Choice>) {
+    if let Some(p) = app.windows.picker.as_mut().filter(|p| p.id == id) {
+        p.set_items(items);
+    }
+}
+
+/// A key while a picker is open: it takes every key. False: no picker is open.
+pub fn picker_event(app: &mut App, k: &KeyEvent) -> bool {
+    if app.windows.picker.is_none() {
+        return false;
+    }
+    if let Some(t) = keys::token_from_event(k) {
+        picker_key(app, &t);
+    }
+    true
+}
+
+/// One key (vim notation) to the open picker.
+pub fn picker_key(app: &mut App, token: &str) {
     let Some(p) = app.windows.picker.as_mut() else { return };
     match picker::feed(p, token) {
         Outcome::Stay => {}
@@ -648,6 +661,11 @@ fn picker_key(app: &mut App, token: &str) {
             let mut p = app.windows.picker.take().unwrap();
             if let Some(b) = p.back_out.take() {
                 b(app);
+            }
+        }
+        Outcome::Preview(v) => {
+            if let Some(live) = p.live {
+                (live.preview)(app, &v);
             }
         }
     }
@@ -702,17 +720,11 @@ pub fn open_attach(app: &mut App) {
     p.back_out = Some(Box::new(take_back));
     let col = if app.config.ui.sidebar_position == "right" { 0 } else { pane::sidebar_width(app, app.windows.cols) } + 2;
     p.place = Place::BottomLeft { col, offset_y: -2, width: 64.min(app.windows.cols.saturating_sub(2)) };
+    let (id, tx) = (p.id, app.tx.clone());
     open_picker(app, p);
-    let tx = app.tx.clone();
     std::thread::spawn(move || {
-        let files: Vec<Choice> = crate::attach::list_files(&dir).into_iter().filter(|f| crate::attach::mentionable(f)).map(Choice::new).collect();
-        let _ = tx.send(crate::app::Msg::Run(Box::new(move |app: &mut App| {
-            if let Some(p) = app.windows.picker.as_mut()
-                && p.items.is_none()
-            {
-                p.set_items(files);
-            }
-        })));
+        let files: Vec<Choice> = crate::attach::list_files(&dir).into_iter().filter(|f| crate::attach::mentionable(f)).map(|f| Choice::new(&f, None, None)).collect();
+        let _ = tx.send(crate::app::Msg::Run(Box::new(move |app: &mut App| fill_picker(app, id, files))));
     });
 }
 
@@ -1826,7 +1838,7 @@ mod tests {
         press(&mut a, "iwhy is ");
         press(&mut a, "@");
         assert!(a.windows.picker.is_some());
-        a.windows.picker.as_mut().unwrap().set_items(vec![Choice::new("README.md"), Choice::new("src/cart.js")]);
+        a.windows.picker.as_mut().unwrap().set_items(vec![Choice::new("README.md", None, None), Choice::new("src/cart.js", None, None)]);
         press(&mut a, "cart\r");
         assert_eq!(a.input, "why is @src/cart.js ");
         press(&mut a, "@");

@@ -15,7 +15,8 @@ Needs Node 22.13 or newer and pnpm. `pnpm build` writes Vercel's output, so use 
 - `src/app/page.tsx`: the home page (`/`)
 - `src/app/docs/page.tsx`: the docs (`/docs`), with the help index on the side
 - `src/components/`: the buffer lines, tabline, the text drawing of vigent, and `vim-chrome.tsx` (the statusline, command line and keys; the only code that runs in the browser)
-- `src/lib/site.ts`: the version, install command and other facts shown in several places
+- `src/lib/site.ts`: the version, install commands and other facts shown in several places
+- `scripts/copy-installers.mjs`: copies `install.sh` and `install.ps1` from the repository root into `public/` before every dev, build and preview, so the site serves them at `/install.sh` and `/install.ps1` (the root files are the only copies)
 - `src/app/globals.css`: all styles
 
 Both pages render statically at build time. Every page also answers as Markdown at its URL plus `.md`.
