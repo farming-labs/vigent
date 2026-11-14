@@ -113,6 +113,7 @@ VIGENT_TTY_BINARY=dist-bin/vigent-linux-x64/vigent VIGENT_BINARY=dist-bin/vigent
 | `scripts/export-themes.mjs` | writes `crates/vigent/src/themes.txt` from the TypeScript themes |
 | `scripts/check-glibc.mjs` | fails when a gnu binary needs a newer glibc than it's meant for |
 | `scripts/package-binaries.mjs` | packs each built target and writes `SHA256SUMS` |
+| `website/scripts/copy-installers.mjs` | copies `install.sh` and `install.ps1` into the website's build, which serves them at `vigent.farming-labs.dev/install.sh` and `/install.ps1` |
 | `install.sh` | macOS and Linux: picks the target (libc and its version, AVX2), checks the download, installs to `~/.vigent`, links `vigent` into `~/.local/bin` |
 | `install.ps1` | Windows: the same, into `%LOCALAPPDATA%\vigent`, and adds it to PATH |
 | `scripts/homebrew-formula.mjs` | writes `Formula/vigent.rb` from `SHA256SUMS`, so this repository is its own tap |
@@ -133,18 +134,22 @@ To release the Rust binaries with each version:
 Once a release has binaries (none does yet, so these don't work today):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/farming-labs/vigent/main/install.sh | sh
+curl -fsSL https://vigent.farming-labs.dev/install.sh | sh
 brew tap farming-labs/vigent https://github.com/farming-labs/vigent && brew install vigent
 docker run --rm -it -v "$PWD:/work" ghcr.io/farming-labs/vigent
 ```
 
 ```powershell
-irm https://raw.githubusercontent.com/farming-labs/vigent/main/install.ps1 | iex
+irm https://vigent.farming-labs.dev/install.ps1 | iex
 ```
+
+Or, with Node 20 or newer, the npm package, which runs every engine: `npm install -g @vigent/cli`.
+
+**The installers on the website are the files in this repository.** `install.sh` and `install.ps1` at the root are the only copies: the website's `dev`, `build` and `preview` scripts run `website/scripts/copy-installers.mjs` first, which copies them into `website/public/` (ignored by git), and Farm serves `public/` at the site's root, as `text/plain` (`routeRules` in `website/farm.config.ts`). So a change to an installer reaches `vigent.farming-labs.dev` with the next deploy of the site, and the archives always come from the GitHub release, never from the site. The build fails when a root installer is missing.
 
 `VIGENT_VERSION=0.9.3` installs that version, and running the installer again updates. The container has no agent CLIs in it: build an image `FROM ghcr.io/farming-labs/vigent` and add the ones you use. The macOS binary isn't signed: installed with `curl` or Homebrew it runs as it is, while one downloaded in a browser has to be allowed in System Settings first.
 
-Still to decide: whether `install.sh` is served from a domain of its own, whether the formula stays in this repository or moves to a tap (the homebrew job pushes to the default branch, which a protected branch refuses), and signing for macOS.
+Still to decide: whether the formula stays in this repository or moves to a tap (the homebrew job pushes to the default branch, which a protected branch refuses), and signing for macOS.
 
 To try a build locally:
 
