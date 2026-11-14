@@ -8,9 +8,9 @@
 # instead (scripts/build-binary-bun.mjs, 85-110 MB): that build is never
 # published, and it's the one the whole pty suite runs through.
 #
-# A version tag (v0.10.0, matching package.json) builds and checks every
-# binary; it publishes them only while the repository variable PUBLISH_BINARIES
-# is "true".
+# A version tag (v0.10.1, matching package.json) builds and checks every
+# binary, then publishes them. Set the repository variable PUBLISH_BINARIES to
+# "false" to build and check tags without publishing.
 name: Binaries
 
 on:
@@ -378,8 +378,8 @@ jobs:
 
   release:
     name: Attach to the release
-    # never the Bun stand-in, even when the workflow is started by hand on a tag with PUBLISH_BINARIES set
-    if: github.ref_type == 'tag' && vars.PUBLISH_BINARIES == 'true' && needs.build.outputs.stand_in != 'true'
+    # never the Bun stand-in, even when the workflow is started by hand on a tag
+    if: github.ref_type == 'tag' && vars.PUBLISH_BINARIES != 'false' && needs.build.outputs.stand_in != 'true'
     needs: [build, check, check-musl, image]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -417,7 +417,7 @@ jobs:
   # After the release has its archives: a failed push here doesn't hold them back.
   image-push:
     name: Push the container image
-    if: github.ref_type == 'tag' && vars.PUBLISH_BINARIES == 'true' && needs.build.outputs.stand_in != 'true'
+    if: github.ref_type == 'tag' && vars.PUBLISH_BINARIES != 'false' && needs.build.outputs.stand_in != 'true'
     needs: [build, release]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -465,7 +465,7 @@ jobs:
   # without it this job says so and does nothing, and the release stands as it is.
   homebrew:
     name: Update the Homebrew tap
-    if: github.ref_type == 'tag' && vars.PUBLISH_BINARIES == 'true' && needs.build.outputs.stand_in != 'true'
+    if: github.ref_type == 'tag' && vars.PUBLISH_BINARIES != 'false' && needs.build.outputs.stand_in != 'true'
     needs: [build, release]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
