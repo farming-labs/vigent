@@ -27,8 +27,8 @@ use crate::session::{Item, State};
 /// What to do when pi isn't there at all.
 pub const PI_MISSING_HINT: &str = "this agent runs on pi, which isn't installed. Install pi and send again, or press Esc and type :new <task> to start an agent on your default engine (:engine picks it, e.g. Claude Code or Codex); :kill removes this one.";
 
-/// What to do when pi can't get through: this agent stays on pi, so start one elsewhere.
-pub const PI_KEY_HINT: &str = "this agent runs on pi, and pi has no working API key. Agents keep the engine they started on: press Esc and type :new <task> to start one on the default engine (:engine picks it, e.g. Claude Code or Codex with your existing login); :kill removes this one.";
+/// What to do when pi can't get through: move this agent to another engine, or start one there.
+pub const PI_KEY_HINT: &str = "this agent runs on pi, and pi has no working API key. :model <id> moves it to a model on another engine (e.g. Claude Code or Codex with your existing login), its conversation with it; or press Esc and type :new <task> to start one on the default engine (:engine picks it); :kill removes this one.";
 
 /// A response's callback: Ok(data) or Err(why).
 type Cb = Box<dyn FnOnce(&mut App, usize, Result<Value, String>) + Send>;
