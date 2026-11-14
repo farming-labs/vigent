@@ -25,6 +25,7 @@ on:
       - crates/**
       - scripts/build-binary.mjs
       - scripts/check-glibc.mjs
+      - scripts/sign-macos.sh
       - scripts/build-binary-bun.mjs
       - scripts/export-themes.mjs
       - scripts/package-binaries.mjs
@@ -120,6 +121,20 @@ jobs:
         run: |
           set -euo pipefail
           for t in ${{ matrix.targets }}; do node scripts/check-glibc.mjs "dist-bin/vigent-$t/vigent" "${{ matrix.glibc }}"; done
+
+      # Developer ID signature and notarization when the six Apple secrets are set (forks and
+      # PRs from them have none); otherwise the linker's ad-hoc signature stays, with a notice
+      - name: Sign and notarize
+        if: startsWith(matrix.name, 'darwin-')
+        shell: bash
+        env:
+          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: scripts/sign-macos.sh "dist-bin/vigent-${{ matrix.targets }}/vigent"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -249,6 +264,16 @@ jobs:
           set -euo pipefail
           exe=""; [[ "${{ matrix.target }}" == windows-* ]] && exe=".exe"
           VIGENT_BINARY="dist-bin/vigent-${{ matrix.target }}/vigent$exe" node --test test/standalone.test.mjs
+
+      # the signature survived packing: Developer ID and notarized, or ad-hoc
+      - name: Check the signature
+        if: startsWith(matrix.target, 'darwin-')
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin="dist-bin/vigent-${{ matrix.target }}/vigent"
+          codesign --verify --strict --verbose=2 "$bin"
+          codesign --display --verbose=2 "$bin" 2>&1 | grep -E '^(Authority|TeamIdentifier|Signature|CodeDirectory)' || true
 
       # the oldest glibc the gnu builds are for, for real: CentOS 7 has glibc 2.17
       - name: Run on glibc 2.17
