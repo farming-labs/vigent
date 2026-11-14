@@ -161,9 +161,9 @@ impl App {
         if crate::actions::windows::picker_event(self, &k) {
             return;
         }
-        // the Config area's :settings and :permissions panels and its pickers (themes, templates)
+        // the Config area's :settings and :permissions panels
         if crate::settings::is_open(self) {
-            crate::settings::key_any(self, k);
+            crate::settings::key(self, k);
             return;
         }
         // the Review area's windows (:diff, :review, :dash, :cost, the race list)

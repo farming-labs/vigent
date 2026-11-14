@@ -114,7 +114,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     // the Review area's windows (:diff, :review, :dash, :cost, the race list)
     crate::review::draw(f, app, area);
     // the Config area's :settings and :permissions panels
-    crate::settings::draw_any(f, app, area);
+    crate::settings::draw(f, app, area);
     // a picker (the @ file picker, :model, :effort, :engine, ...), over everything
     if let Some(p) = &app.windows.picker {
         let (w, r) = picker_rect(p, area);
