@@ -1,0 +1,9 @@
+# nord, with a card per agent and a brighter mode badge
+extends = "nord"
+
+[highlights]
+VigentModeNormal = { fg = "#2e3440", bg = "#88c0d0", bold = true }
+VigentUser = { fg = "#88c0d0", bold = true }
+
+[style]
+sidebar = "cards"

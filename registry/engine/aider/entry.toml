@@ -1,0 +1,5 @@
+[engines.aider]
+name = "Aider"
+command = ["aider", "--yes-always", "--no-pretty", "--message", "{prompt}"]
+model_args = ["--model", "{model}"]
+models = ["sonnet", "gpt-5"]

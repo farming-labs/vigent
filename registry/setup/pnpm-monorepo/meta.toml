@@ -1,0 +1,4 @@
+description = "installs each new worktree, tests before merging, lets Claude Code run pnpm test"
+author = "vigent"
+license = "MIT"
+tags = ["pnpm", "node"]

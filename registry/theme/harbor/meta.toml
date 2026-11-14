@@ -1,0 +1,4 @@
+description = "nord with a card per agent and a brighter mode badge"
+author = "vigent"
+license = "MIT"
+tags = ["dark", "layout", "nord"]

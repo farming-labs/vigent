@@ -1,0 +1,4 @@
+description = "fetches crates in new worktrees and runs clippy and tests before merging"
+author = "vigent"
+license = "MIT"
+tags = ["rust", "cargo"]

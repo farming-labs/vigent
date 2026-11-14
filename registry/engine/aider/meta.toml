@@ -1,0 +1,4 @@
+description = "Aider as an engine, with :model choosing its model"
+author = "vigent"
+license = "MIT"
+tags = ["text output"]

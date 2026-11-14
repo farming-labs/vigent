@@ -1,0 +1,9 @@
+# <leader>a, then one key: an agent's whole life, from starting it to landing it
+[keys.normal]
+"<leader>an" = ":new "
+"<leader>at" = ":templates<CR>"
+"<leader>ad" = ":diff<CR>"
+"<leader>ar" = ":review<CR>"
+"<leader>am" = ":merge<CR>"
+"<leader>ap" = ":pr<CR>"
+"<leader>ak" = ":kill<CR>"

@@ -1,0 +1,4 @@
+description = "Amp, read through its Claude Code-style JSON stream"
+author = "vigent"
+license = "MIT"
+tags = ["stream-json"]

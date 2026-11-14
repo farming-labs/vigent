@@ -1,0 +1,8 @@
+# race it for several reviews at once:  :race -t race-review
+[templates.race-review]
+description = "review this branch; changes nothing"
+prompt = """
+Review this branch for bugs, missing cases and missing tests: compare it with the branch \
+it started from using git. List each finding with file:line, most serious first. \
+Don't change any files. {task}"""
+effort = "high"

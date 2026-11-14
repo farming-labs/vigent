@@ -1,0 +1,4 @@
+description = "find why CI failed, fix it, and rerun the same check locally"
+author = "vigent"
+license = "MIT"
+tags = ["ci", "gh"]

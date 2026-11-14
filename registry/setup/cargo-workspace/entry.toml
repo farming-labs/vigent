@@ -1,0 +1,8 @@
+# a .vigent.toml for a Cargo workspace
+
+[hooks]
+worktree_created = "cargo fetch --locked"
+before_merge = "cargo clippy --all-targets -- -D warnings && cargo test --locked"
+
+[engines.claude]
+allow = ["Bash(cargo test:*)", "Bash(cargo clippy:*)"]
