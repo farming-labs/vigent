@@ -7,6 +7,8 @@ vigent config init     # write a commented starter file
 vigent config check    # validate it: bad keys, unknown actions, missing themes
 ```
 
+`vigent add <name>` adds a template, keymap or engine from the [registry](registry.md) to this file, beside what's there, after showing it to you.
+
 A mistake in the file never stops vigent from starting. It shows as a warning on the command line, and `vigent config check` lists every problem, with a suggestion when a name looks like a typo.
 
 ## A complete example

@@ -84,7 +84,7 @@ function Card({ item }: { item: Item }) {
       <p className="rdesc">{item.description}</p>
       <div className="rmeta">
         <span className={item.builtin ? "badge" : runs ? "badge warn" : "badge ok"}>{item.builtin ? "built in" : runs ? "runs commands" : "data only"}</span>
-        <span className="cm">{item.sample ? "sample" : `by ${item.author}`}</span>
+        <span className="cm">by {item.author}</span>
         {item.tags.map((t) => (
           <span className="cm" key={t}>
             · {t}
@@ -93,9 +93,17 @@ function Card({ item }: { item: Item }) {
       </div>
       {runs && (
         <ul className="rruns" aria-label="What it runs">
-          {runs.map((r) => (
-            <li key={r}>
-              <span className="cm">$</span> {r}
+          {runs.map((r, i) => (
+            <li key={`${r.from}${i}`} title={r.from}>
+              {r.allow ? (
+                <>
+                  <span className="cm">allows Claude Code:</span> {r.allow}
+                </>
+              ) : (
+                <>
+                  <span className="cm">$</span> {r.command}
+                </>
+              )}
             </li>
           ))}
         </ul>
