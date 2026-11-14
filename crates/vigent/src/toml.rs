@@ -40,6 +40,26 @@ impl Val {
 
 type Table = Vec<(String, Val)>;
 
+/// A dotted key at byte `i` of a line: its parts, and the byte after it and the spaces that follow.
+pub fn read_key(line: &str, i: usize) -> Option<(Vec<String>, usize)> {
+    let mut p = P { s: line.as_bytes(), i };
+    let parts = p.key().ok()?;
+    Some((parts, p.i))
+}
+
+/// Whether two values are the same, tables in any order.
+pub fn same(a: &Val, b: &Val) -> bool {
+    match (a, b) {
+        (Val::Table(x), Val::Table(y)) => same_table(x, y),
+        (Val::Arr(x), Val::Arr(y)) => x.len() == y.len() && x.iter().zip(y).all(|(a, b)| same(a, b)),
+        _ => a == b,
+    }
+}
+
+pub fn same_table(x: &[(String, Val)], y: &[(String, Val)]) -> bool {
+    x.len() == y.len() && x.iter().all(|(k, v)| y.iter().any(|(k2, v2)| k == k2 && same(v, v2)))
+}
+
 /// Parse a document. The error names the line: "line 3: expected a value".
 pub fn parse(text: &str) -> Result<Table, String> {
     let mut p = P { s: text.as_bytes(), i: 0 };

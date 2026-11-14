@@ -28,6 +28,8 @@ pub static SUBCOMMANDS: &[Sub] = &[
     Sub { names: &["worktree", "worktrees", "wt"], run: worktree_command },
     Sub { names: &["config"], run: config_command },
     Sub { names: &["trust"], run: crate::trust::command },
+    Sub { names: &["add"], run: crate::registry::add_command },
+    Sub { names: &["search"], run: crate::registry::search_command },
 ];
 
 fn version() -> i32 {

@@ -30,6 +30,7 @@ mod permissions;
 mod printable;
 mod race;
 mod records;
+mod registry;
 mod review;
 mod search;
 mod serve;
