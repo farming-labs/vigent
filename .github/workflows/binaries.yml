@@ -8,12 +8,14 @@
 # instead (scripts/build-binary-bun.mjs, 85-110 MB): that build is never
 # published, and it's the one the whole pty suite runs through.
 #
-# Nothing is published yet. To release the Rust binaries with each version:
-#   1. add the tag trigger below:   push: { tags: ["v*"] }
-#   2. set the repository variable PUBLISH_BINARIES to "true"
+# A version tag (v0.10.0, matching package.json) builds and checks every
+# binary; it publishes them only while the repository variable PUBLISH_BINARIES
+# is "true".
 name: Binaries
 
 on:
+  push:
+    tags: ["v*"]
   workflow_dispatch:
     inputs:
       bun:

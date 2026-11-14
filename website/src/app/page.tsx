@@ -93,7 +93,7 @@ export default function HomePage() {
         </L>
         <L />
         <L>
-          riftri comes with either. The binary runs Claude Code agents for now; the npm package runs every engine. Press <span className="kw">i</span>, type a
+          riftri comes with either, and both run every engine. Press <span className="kw">i</span>, type a
           task, Enter: the first agent starts in its own worktree.{" "}
           <HelpLink href="/docs">vigent-docs</HelpLink> has the rest.
         </L>
