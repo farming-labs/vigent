@@ -79,7 +79,8 @@ suite runs no slower. The growth since milestone 1 is the port itself (about
 | `toml.rs` | smol-toml | TOML reader into `Val` (ordered tables) | Config |
 | `worktree.rs` | `src/worktree.ts`, `src/riftri.ts` | plan/make/list/find/remove worktrees with `[worktree]` config, `RIFTRI_BINARY`, branch deletion when merged, riftri ownership/backends/views/gc/health, diff stat from the fork point | Sessions |
 | `trust.rs` | `src/trust.ts` | trusted project files (sha256), `:trust`, `vigent trust` | Config |
-| `config_edit.rs` | `src/config-edit.ts` | one value set in config.toml, comments kept | Config |
+| `config_edit.rs` | `src/config-edit.ts` | one value set in config.toml, or a registry entry's tables added, comments kept | Config |
+| `registry.rs` | `src/registry.ts` | `vigent add`, `vigent add --list`, `vigent search`: the registry's index, fetched with curl or wget (no HTTP or TLS code in the binary) | Config |
 | `settings.rs` | `src/settings.ts`, `openSettings` | the settings panel (also :permissions'), `ConfigState` (`app.cfg`) | Config |
 | `permissions.rs` | `src/permissions.ts`, `openPermissions` | permission helpers, the panel, saving and reloading | Config |
 | `looks.rs` | `openThemePicker`, `saveTheme`, `execHighlight`, `applySetCommand` | :colorscheme picker, :theme save, :hi, :set | Config |

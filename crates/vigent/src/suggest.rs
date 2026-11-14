@@ -1,6 +1,6 @@
 //! "Did you mean ...?" for typos in action and theme names (src/suggest.ts).
 
-fn distance(a: &[char], b: &[char]) -> usize {
+pub(crate) fn distance(a: &[char], b: &[char]) -> usize {
     let mut dp: Vec<usize> = (0..=b.len()).collect();
     for i in 1..=a.len() {
         let mut prev = dp[0];
