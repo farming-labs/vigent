@@ -3,7 +3,7 @@ import { Heading, HelpLink, KeyRow, L, More, Rule, Tilde } from "../components/b
 import { Screen } from "../components/screen";
 import { Tabline } from "../components/tabline";
 import { VimChrome } from "../components/vim-chrome";
-import { INSTALL, LOGO } from "../lib/site";
+import { INSTALL, INSTALL_PS1, INSTALL_SH, LOGO } from "../lib/site";
 import { THEMES } from "../lib/themes";
 
 // nothing here reads the request, so it renders once at build time
@@ -83,11 +83,18 @@ export default function HomePage() {
           <span className="str">{INSTALL}</span> <span className="cm">" Node 20+, macOS, Linux, Windows</span>
         </L>
         <L className="indent">
+          <span className="str">{INSTALL_SH}</span> <span className="cm">" or one binary, no Node: macOS, Linux</span>
+        </L>
+        <L className="indent">
+          <span className="str">{INSTALL_PS1}</span> <span className="cm">" the binary on Windows</span>
+        </L>
+        <L className="indent">
           <span className="str">cd your-repo &amp;&amp; vigent .</span>
         </L>
         <L />
         <L>
-          riftri comes with it. Press <span className="kw">i</span>, type a task, Enter: the first agent starts in its own worktree.{" "}
+          riftri comes with either. The binary runs Claude Code agents for now; the npm package runs every engine. Press <span className="kw">i</span>, type a
+          task, Enter: the first agent starts in its own worktree.{" "}
           <HelpLink href="/docs">vigent-docs</HelpLink> has the rest.
         </L>
         <L />

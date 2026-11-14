@@ -221,11 +221,21 @@ pub fn run_hook(command: &str, cwd: &Path, env: &[(String, String)], timeout: Du
         Ok(c) => c,
         Err(e) => return HookResult { ok: false, code: None, output: e.to_string(), took: Duration::ZERO, timed_out: false },
     };
+    // what it printed so far, kept even if something it started holds the pipe open
+    let printed = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let sink = printed.clone();
     std::thread::spawn(move || {
-        let mut buf = vec![];
-        let _ = std::io::Read::read_to_end(&mut reader, &mut buf);
-        let _ = done_tx.send(buf);
+        let mut chunk = [0u8; 8192];
+        loop {
+            match std::io::Read::read(&mut reader, &mut chunk) {
+                Ok(0) => break,
+                Ok(n) => sink.lock().unwrap_or_else(|e| e.into_inner()).extend_from_slice(&chunk[..n]),
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(_) => break,
+            }
+        }
+        let _ = done_tx.send(());
     });
     let mut timed_out = false;
     let status = loop {
@@ -244,7 +254,8 @@ pub fn run_hook(command: &str, cwd: &Path, env: &[(String, String)], timeout: Du
         }
     };
     // what it printed; something it started that's still running may hold the pipe open, so don't wait for long
-    let bytes = done_rx.recv_timeout(Duration::from_secs(if timed_out { 1 } else { 5 })).unwrap_or_default();
+    let _ = done_rx.recv_timeout(Duration::from_secs(if timed_out { 1 } else { 5 }));
+    let bytes = std::mem::take(&mut *printed.lock().unwrap_or_else(|e| e.into_inner()));
     let text = String::from_utf8_lossy(&bytes);
     let keep: String = text.chars().rev().take(4000).collect::<Vec<_>>().into_iter().rev().collect();
     let code = if timed_out { None } else { status.and_then(|s| s.code()) };
