@@ -123,7 +123,7 @@ VIGENT_TTY_BINARY=dist-bin/vigent-linux-x64/vigent VIGENT_BINARY=dist-bin/vigent
 | `docker/Dockerfile` | the binary with git on debian-slim, for `ghcr.io/farming-labs/vigent` |
 | `.github/workflows/binaries.yml` | builds Rust on each platform's own runner and packs it, checks each target on its own platform (musl in Alpine), builds and runs the image; with publishing on, attaches the archives to the release, pushes the image, commits the formula to the tap |
 
-The workflow's jobs, in order: **rust** (one per platform; the gnu ones with cargo-zigbuild for glibc 2.17, then `check-glibc`; the darwin ones signed, and notarized when the Apple secrets are set) → **build** (pack) → **check** (Linux x64, x64 baseline and arm64, each also in `centos:7`; macOS arm64 and macOS x64 under Rosetta on `macos-latest`, Windows), **check-musl** (Alpine, x64 and arm64) and **image** → **release** → **image-push** and **homebrew**. The last three need a tag and `PUBLISH_BINARIES`, and never run for the Bun build.
+The workflow's jobs, in order: **rust** (one per platform; the gnu ones with cargo-zigbuild for glibc 2.17, then `check-glibc`; the darwin ones signed, and notarized when the Apple secrets are set) → **build** (pack) → **check** (Linux x64, x64 baseline and arm64, each also in `centos:7`; macOS arm64 and macOS x64 under Rosetta on `macos-latest`, Windows), **check-musl** (Alpine, x64 and arm64) and **image** → **release** → **image-push** and **homebrew**. The last three need a tag and `PUBLISH_BINARIES`, and never run for the Bun build (its `stand_in` output; **release** also refuses any archive over 20 MB, which only the Bun build reaches).
 
 ## Publishing
 
