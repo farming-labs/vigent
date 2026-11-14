@@ -318,6 +318,8 @@ impl App {
 
     /// The next queued prompt, once the agent is free.
     pub fn drain(&mut self, i: usize) {
+        // a move to another engine that waited for the turn goes first: the queued prompt is the new engine's
+        engines::select::settle_switch(self, i);
         if let Some(next) = self.sessions[i].next_prompt() {
             self.send(i, next);
         }
@@ -364,6 +366,10 @@ impl App {
     /// queued prompt goes once the last one has exited).
     pub fn tick(&mut self) {
         crate::actions::windows::tick(self);
+        // :model <id> on the command line: Tab offers the engines' models, so they load now
+        if self.mode == Mode::Command && self.engines.models.is_none() && self.engines.models_waiting.is_none() && crate::completion::wants_models(&self.cmd) {
+            engines::select::with_models(self, Box::new(|_| {}));
+        }
         let step = self.seq.tick(&self.keymap, self.mode.keys());
         self.run_step(step);
         for i in 0..self.sessions.len() {

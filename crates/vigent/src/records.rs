@@ -32,11 +32,15 @@ pub struct AgentMeta {
     pub effort: Option<String>,
     /// what a CLI agent has used so far
     pub usage: Option<(u64, Option<f64>)>,
+    /// moved here from another engine (:model) and not prompted since: the conversation its next prompt carries over
+    pub handoff: Option<String>,
+    /// the model's readable name, from its engine's list, when it moved to it from another engine
+    pub model_name: Option<String>,
     /// keys this build doesn't know (another vigent's), written back as they were
     pub extra: Map<String, Value>,
 }
 
-const KNOWN_KEYS: [&str; 10] = ["name", "model", "base", "createdAt", "detached", "engine", "resumeId", "requestedModel", "effort", "usage"];
+const KNOWN_KEYS: [&str; 12] = ["name", "model", "base", "createdAt", "detached", "engine", "resumeId", "requestedModel", "effort", "usage", "handoff", "modelName"];
 
 impl AgentMeta {
     pub fn to_json(&self) -> Value {
@@ -63,6 +67,11 @@ impl AgentMeta {
             }
             m.insert("usage".into(), Value::Object(u));
         }
+        for (k, v) in [("handoff", &self.handoff), ("modelName", &self.model_name)] {
+            if let Some(v) = v {
+                m.insert(k.into(), v.clone().into());
+            }
+        }
         for (k, v) in &self.extra {
             m.entry(k.clone()).or_insert_with(|| v.clone());
         }
@@ -82,6 +91,8 @@ impl AgentMeta {
             requested_model: s("requestedModel"),
             effort: s("effort"),
             usage: v.get("usage").and_then(|u| Some((u.get("tokens")?.as_f64()? as u64, u.get("cost").and_then(Value::as_f64)))),
+            handoff: s("handoff"),
+            model_name: s("modelName"),
             extra: v.as_object().map(|o| o.iter().filter(|(k, _)| !KNOWN_KEYS.contains(&k.as_str())).map(|(k, v)| (k.clone(), v.clone())).collect()).unwrap_or_default(),
         })
     }

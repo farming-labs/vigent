@@ -672,7 +672,8 @@ impl App {
         } else {
             (a.requested_model.clone().or_else(|| a.model.clone()).unwrap_or_default(), None, None)
         };
-        let effort = a.effort.clone();
+        let (effort, engine, resume) = (a.effort.clone(), a.engine.clone(), a.resume_id.clone());
+        let (handoff, model_name) = (a.handoff.clone(), a.model_name.clone());
         records::update(&a.path, |m| {
             m.model = model;
             if cli {
@@ -680,6 +681,18 @@ impl App {
                 m.usage = usage;
             }
             m.effort = effort;
+            // moved to another engine (:model): the conversation its next prompt still has to carry over
+            m.handoff = handoff;
+            m.model_name = model_name;
+            if m.engine.as_deref().unwrap_or("pi") != engine {
+                // it runs on another engine now, in a conversation of its own there
+                m.engine = Some(engine);
+                m.resume_id = if cli { resume } else { None };
+                if !cli {
+                    m.requested_model = None;
+                    m.usage = None;
+                }
+            }
         });
     }
 
@@ -763,6 +776,10 @@ impl App {
         });
         s.riftri = backend;
         s.effort = meta.effort.clone();
+        // moved to another engine and not prompted since: the next prompt still carries the conversation
+        s.handoff = meta.handoff.clone();
+        s.model_name = meta.model_name.clone();
+        s.pi_fresh = engine == "pi" && meta.handoff.is_some();
         if engine != "pi" {
             s.requested_model = meta.requested_model.clone();
             s.model = meta.requested_model.clone();
@@ -873,6 +890,14 @@ impl App {
                 }
             }
             self.watch_race(i);
+        }
+        for i in self.open() {
+            // a move to another engine that waited for the turn to end
+            engines::select::settle_switch(self, i);
+            // the handoff went out: the record forgets it
+            if std::mem::take(&mut self.sessions[i].handoff_sent) {
+                self.persist(i);
+            }
         }
         // an agent that's free again takes its next queued prompt (stopped with <C-c>, say)
         for i in self.open() {

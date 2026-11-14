@@ -68,7 +68,8 @@ suite runs no slower. The growth since milestone 1 is the port itself (about
 | `engines/detect.rs` | `run`, `onPath`, `detectPi`, `piAgentDir` | env-explicit command runs with a timeout | Engines |
 | `engines/choices.rs` | `src/choices.ts`, `piModels` | model lists, `model_label`, efforts, `codex debug models` | Engines |
 | `engines/pi.rs` | `src/pi-session.ts`, `pi-ui.ts` | `pi --mode rpc` per agent: requests, events, restore from its session file, extension dialogs | Engines |
-| `engines/select.rs` | `startAgent`, `chooseModel`, `chooseEffort`, `chooseEngine`, pickers | which engine/model/effort new and open agents use | Engines |
+| `engines/select.rs` | `startAgent`, `chooseModel`, `pickModel`, `switchEngine`, `moveSession`, `modelLists`, `chooseEffort`, `chooseEngine`, pickers | which engine/model/effort new and open agents use; `:model` moving an open agent to another engine in place (`switch_engine`, `settle_switch` once its turn ends); the engines' model lists, loaded once (`with_models`, shared with `:race --models`) | Engines |
+| `engines/handoff.rs` | `src/handoff.ts` | the conversation carried to the new engine (`handoff_text`, 40,000 characters), `model_phrase`, `resolve_model` (an exact id to the engine that lists it, through `race::model_owners`), `model_completions` | Engines |
 | `engines/permissions.rs` | `blocked`, `describeDenial`, `allowRules`, `commandPrograms`, `flagValue` | what a refusal says | Engines |
 | `engines/claude.rs` | `claudeAdapter`, `detectClaude` | Claude Code | Engines |
 | `engines/run.rs` | `CliSession.send` | spawns one turn of any adapter, reads its lines on threads | Engines |
@@ -264,6 +265,14 @@ area consumes yet (remove your flag from that list when you wire it).
     `serve::statusline_right`; `Theme::group` and `Theme::normal_bg` (a
     transparent theme's background) give the page its palette;
     `Session::streaming_at` marks a streaming reply.
+- `:model` to another engine: the TypeScript swaps in a new Session object on
+  the new engine; Rust changes the agent's `Session` in place (engine, model,
+  effort; the resume id goes, pi's process is dropped). The pending handoff is
+  `Session::handoff`, sent once by `Session::run` / `pi::send` (`handoff_sent`
+  tells `watch_states` to save the record); a move that waits for the turn is
+  `Session::pending_switch`, settled in `App::drain` and `watch_states`. The
+  record's `handoff` and `modelName` keys are TypeScript's. `:race --models`
+  now reads the same cached model lists (`select::with_models`).
 - Kill keeps the slot (`Session::closed`): `App::open()` is the list the
   TypeScript's `sessions` array is; forks name their original by slot (`fork_of`).
 - An agent that finishes goes idle, and unread (◆) when you weren't looking,
@@ -345,9 +354,9 @@ Sessions:
 
 Engines:
 - [x] `:checkhealth` `:che` `:engines` (re-detects first; TS text; Rust also keeps `:health`) — **Engines** (worktrees part: **Sessions**)
-- [x] `:model` `:mo [model]` (picker of every ready engine's models, `/` search, any name; `codex:gpt-5.5` from another engine) — **Engines**
+- [x] `:model` `:mo [model]` (picker of every ready engine's models, `/` search, any name; an exact id another engine lists moves the open agent there in place, the handoff in its first prompt; Tab completes ids with their names) — **Engines**
 - [x] `:engine` `:eng [id]` (picker and direct) — **Engines**
-- [x] `:effort` `:think [level]` (picker and direct; Codex's per-model levels) — **Engines**
+- [x] `:effort` `:think [level]` (picker and direct; Codex's per-model levels; Tab completes the levels) — **Engines**
 - [x] `:permissions` `:permission` `:perms` `:perm`, `allow <rule>`, `remove <rule>` (`permissions.rs`: saved at once, reloaded first so two vigents don't undo each other) — **Config**
 - [~] `:pi` `:extensions` (the float lists what pi loaded; Enter doesn't start a prompt yet) — **Engines**
 
