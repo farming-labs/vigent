@@ -1,6 +1,6 @@
 # Standalone binaries
 
-vigent as one file that needs git and nothing else: no Node. The binary is the Rust port ([#168](https://github.com/farming-labs/vigent/issues/168)) in `crates/vigent`, with riftri linked in, so worktrees are copy-on-write and there's no second file. **Nothing is published yet**: the pipeline builds and checks every platform on each pull request that touches it.
+vigent as one file that needs git and nothing else: no Node. The binary is the Rust port ([#168](https://github.com/farming-labs/vigent/issues/168)) in `crates/vigent`, with riftri linked in, so worktrees are copy-on-write and there's no second file. Every release from v0.10.0 on publishes it; the pipeline also builds and checks every platform on each pull request that touches it.
 
 - [What's in it](#whats-in-it)
 - [Sizes](#sizes)
@@ -127,10 +127,7 @@ The workflow's jobs, in order: **rust** (one per platform; the gnu ones with car
 
 ## Publishing
 
-To release the Rust binaries with each version:
-
-1. Add the tag trigger to `.github/workflows/binaries.yml`: `push: { tags: ["v*"] }`.
-2. Set the repository variable `PUBLISH_BINARIES` to `true`.
+A version tag (`v0.10.0`, matching package.json) runs the workflow. It publishes while the repository variable `PUBLISH_BINARIES` is `true`; set it to anything else to build and check a tag without publishing.
 
 ### The Homebrew tap
 
@@ -167,9 +164,9 @@ An ad-hoc signed binary runs as it is when installed with `install.sh` or Homebr
 xattr -d com.apple.quarantine ./vigent
 ```
 
-## How people will install it
+## How people install it
 
-Once a release has binaries (none does yet, so these don't work today):
+From v0.10.0 on:
 
 ```bash
 curl -fsSL https://vigent.farming-labs.dev/install.sh | sh
@@ -185,7 +182,7 @@ Or, with Node 20 or newer, the npm package, which runs every engine: `npm instal
 
 **The installers on the website are the files in this repository.** `install.sh` and `install.ps1` at the root are the only copies: the website's `dev`, `build` and `preview` scripts run `website/scripts/copy-installers.mjs` first, which copies them into `website/public/` (ignored by git), and Farm serves `public/` at the site's root, as `text/plain` (`routeRules` in `website/farm.config.ts`). So a change to an installer reaches `vigent.farming-labs.dev` with the next deploy of the site, and the archives always come from the GitHub release, never from the site. The build fails when a root installer is missing.
 
-`VIGENT_VERSION=0.9.3` installs that version, and running the installer again updates. The container has no agent CLIs in it: build an image `FROM ghcr.io/farming-labs/vigent` and add the ones you use. On macOS, a binary from a release built without the Apple secrets is only ad-hoc signed: installed with `curl` or Homebrew it runs as it is, while one downloaded in a browser needs `xattr -d com.apple.quarantine ./vigent` first ([Signing for macOS](#signing-for-macos)).
+`VIGENT_VERSION=0.10.0` installs that version, and running the installer again updates. The container has no agent CLIs in it: build an image `FROM ghcr.io/farming-labs/vigent` and add the ones you use. On macOS, a binary from a release built without the Apple secrets is only ad-hoc signed: installed with `curl` or Homebrew it runs as it is, while one downloaded in a browser needs `xattr -d com.apple.quarantine ./vigent` first ([Signing for macOS](#signing-for-macos)).
 
 To try a build locally:
 

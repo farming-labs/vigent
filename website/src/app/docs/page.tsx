@@ -102,7 +102,7 @@ export default function DocsPage() {
             <S>vigent --version</S>
           </Code>
           <L>
-            Or the standalone binary, which needs git and no Node (Claude Code agents for now; the npm package runs every engine). It downloads the release from
+            Or the standalone binary, which needs git and no Node and runs every engine. It downloads the release from
             GitHub, checks it, and installs to <S>~/.vigent</S> (<S>%LOCALAPPDATA%\vigent</S> on Windows). Run it again to update.
           </L>
           <Code>
