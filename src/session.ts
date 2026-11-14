@@ -201,7 +201,29 @@ export abstract class Session {
 	/** Use this model from the next prompt on. */
 	setModel(model: string | undefined): void | Promise<void> {
 		if (model) this.model = model;
+		this.modelName = undefined;
 		this.emit();
+	}
+
+	/** the model's readable name, from its engine's list (set when the agent moved to it from another engine) */
+	modelName?: string;
+
+	/**
+	 * The conversation so far, from the engine this agent ran on before
+	 * (`:model` with another engine's model): the next prompt that goes out
+	 * starts with it, once.
+	 */
+	handoff?: string;
+	/** the handoff went out (the app saves the agent's record without it) */
+	onHandoffSent?: () => void;
+
+	/** What goes before the prompt going out now: the handoff, the first time. */
+	takeHandoff(): string {
+		const h = this.handoff ?? "";
+		if (!h) return "";
+		this.handoff = undefined;
+		this.onHandoffSent?.();
+		return h;
 	}
 
 	/** Use this reasoning effort (thinking level) from the next prompt on. */

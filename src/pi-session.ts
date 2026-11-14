@@ -48,6 +48,8 @@ export interface PiSessionOptions {
 	extraArgs?: string[];
 	/** pi starts once this settles: the worktree being made, since pi runs in it */
 	after?: Promise<unknown>;
+	/** start a new conversation in sessionDir instead of continuing the last one (an agent that moved here from another engine) */
+	fresh?: boolean;
 }
 
 interface Pending {
@@ -86,7 +88,7 @@ export class PiSession extends Session {
 		return [
 			"--mode",
 			"rpc",
-			...(this.opts.sessionDir ? ["--session-dir", this.opts.sessionDir, "--continue"] : ["--no-session"]),
+			...(this.opts.sessionDir ? ["--session-dir", this.opts.sessionDir, ...(this.opts.fresh ? [] : ["--continue"])] : ["--no-session"]),
 			...(model ? ["--model", model] : []),
 			...(this.effort ? ["--thinking", this.effort] : []),
 			...(this.opts.extraArgs ?? []),
@@ -403,7 +405,11 @@ export class PiSession extends Session {
 			.then(() => {
 				this.runStarted = false;
 				// pi reports agent_end a moment before it's idle: a prompt sent right then queues instead of failing
-				return this.request({ type: "prompt", message: attached.prompt, streamingBehavior: "followUp" });
+				// the first prompt after a move from another engine carries the conversation so far
+				const message = this.takeHandoff() + attached.prompt;
+				// pi keeps this conversation now: a pi started again continues it
+				this.opts.fresh = false;
+				return this.request({ type: "prompt", message, streamingBehavior: "followUp" });
 			})
 			// an extension command (/name) runs no turn: nothing else will end it
 			.then(() => this.request({ type: "get_state" }))
@@ -440,6 +446,7 @@ export class PiSession extends Session {
 		}
 		await this.request({ type: "set_model", provider, modelId });
 		this.model = `${provider}/${modelId}`;
+		this.modelName = undefined;
 		this.emit();
 	}
 
