@@ -36,6 +36,10 @@ jobs:
       - name: Test
         run: npm test
 
+      # every registry entry loads with vigent's own code, and the index vigent add reads is up to date
+      - name: Check the registry
+        run: npm run registry:check
+
       - name: Check the version
         id: version
         shell: bash
