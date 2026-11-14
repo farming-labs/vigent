@@ -24,6 +24,7 @@ on:
     paths:
       - crates/**
       - scripts/build-binary.mjs
+      - scripts/check-glibc.mjs
       - scripts/build-binary-bun.mjs
       - scripts/export-themes.mjs
       - scripts/package-binaries.mjs
@@ -55,8 +56,10 @@ jobs:
       matrix:
         include:
           # x86-64 Rust doesn't need AVX2: the baseline target is the same build
-          - { name: linux-x64, os: ubuntu-24.04, targets: "linux-x64 linux-x64-baseline", triple: x86_64-unknown-linux-gnu, test: true }
-          - { name: linux-arm64, os: ubuntu-24.04-arm, targets: linux-arm64, triple: aarch64-unknown-linux-gnu }
+          # the gnu builds link against glibc 2.17 with cargo-zigbuild, not the runner's (2.39), so they start
+          # on RHEL/CentOS 7, Debian 8, Ubuntu 14.04 and newer; install.sh gives older systems the musl build
+          - { name: linux-x64, os: ubuntu-24.04, targets: "linux-x64 linux-x64-baseline", triple: x86_64-unknown-linux-gnu, glibc: "2.17", test: true }
+          - { name: linux-arm64, os: ubuntu-24.04-arm, targets: linux-arm64, triple: aarch64-unknown-linux-gnu, glibc: "2.17" }
           - { name: linux-x64-musl, os: ubuntu-24.04, targets: linux-x64-musl, triple: x86_64-unknown-linux-musl }
           - { name: linux-arm64-musl, os: ubuntu-24.04-arm, targets: linux-arm64-musl, triple: aarch64-unknown-linux-musl }
           - { name: darwin-arm64, os: macos-latest, targets: darwin-arm64, triple: aarch64-apple-darwin }
@@ -79,7 +82,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: crates/vigent
-          key: ${{ matrix.triple }}
+          key: ${{ matrix.triple }}${{ matrix.glibc && format('-glibc{0}', matrix.glibc) || '' }}
 
       # the crate's own tests, and its themes still the TypeScript ones
       - name: Test
@@ -91,9 +94,32 @@ jobs:
           node scripts/export-themes.mjs --check
           (cd crates/vigent && cargo test --locked)
 
+      # Zig from PyPI (cargo-zigbuild runs it as `python3 -m ziglang`), and a prebuilt cargo-zigbuild
+      - name: Zig
+        if: matrix.glibc
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/zig"
+          "$RUNNER_TEMP/zig/bin/pip" install --quiet ziglang==0.17.1
+          echo "$RUNNER_TEMP/zig/bin" >> "$GITHUB_PATH"
+
+      - uses: taiki-e/install-action@v2
+        if: matrix.glibc
+        with:
+          tool: cargo-zigbuild@0.24.1
+
       - name: Build
         shell: bash
-        run: node scripts/build-binary.mjs --no-pack ${{ matrix.targets }}
+        run: node scripts/build-binary.mjs --no-pack ${{ matrix.glibc && format('--glibc {0}', matrix.glibc) || '' }} ${{ matrix.targets }}
+
+      # fails when the build asks for a newer glibc than it's meant for (objdump -T and -p, weak versions too)
+      - name: Check the glibc it needs
+        if: matrix.glibc
+        shell: bash
+        run: |
+          set -euo pipefail
+          for t in ${{ matrix.targets }}; do node scripts/check-glibc.mjs "dist-bin/vigent-$t/vigent" "${{ matrix.glibc }}"; done
 
       - uses: actions/upload-artifact@v4
         with:
@@ -223,6 +249,19 @@ jobs:
           set -euo pipefail
           exe=""; [[ "${{ matrix.target }}" == windows-* ]] && exe=".exe"
           VIGENT_BINARY="dist-bin/vigent-${{ matrix.target }}/vigent$exe" node --test test/standalone.test.mjs
+
+      # the oldest glibc the gnu builds are for, for real: CentOS 7 has glibc 2.17
+      - name: Run on glibc 2.17
+        if: matrix.target == 'linux-x64' || matrix.target == 'linux-x64-baseline' || matrix.target == 'linux-arm64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm -v "$PWD/dist-bin/vigent-${{ matrix.target }}:/opt/vigent:ro" centos:7 sh -euc '
+            ldd --version | head -n 1
+            /opt/vigent/vigent --version
+            /opt/vigent/vigent theme list > /tmp/themes
+            grep -q "^tokyonight" /tmp/themes
+          '
 
       # the whole suite with every pty test driving the binary instead of Node: navigation, config,
       # layout, permissions, worktrees, every engine. The Bun build passes it; it's the Rust port's

@@ -6,6 +6,7 @@ vigent as one file that needs git and nothing else: no Node. The binary is the R
 - [Sizes](#sizes)
 - [Building it](#building-it)
 - [What a build hands over](#what-a-build-hands-over)
+- [Which Linux it runs on](#which-linux-it-runs-on)
 - [The checks](#the-checks)
 - [The pieces](#the-pieces)
 - [Publishing](#publishing)
@@ -41,8 +42,11 @@ The release profile in `crates/vigent/Cargo.toml` is set for size: `opt-level = 
 ```bash
 npm run build:binary                                   # Rust, for this machine (needs https://rustup.rs)
 node scripts/build-binary.mjs linux-x64-musl           # another target: rustup target add x86_64-unknown-linux-musl first
+node scripts/build-binary.mjs --glibc 2.17             # the gnu build as released: runs on glibc 2.17 and newer
 (cd crates/vigent && cargo test)                       # the crate's own tests
 ```
+
+Without `--glibc`, a linux-gnu build needs the glibc of the machine that built it. `--glibc 2.17` builds the gnu targets with [cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild) against glibc 2.17 instead, the way the release does; it needs `cargo install --locked cargo-zigbuild` and Zig (`pip install ziglang`, or [ziglang.org](https://ziglang.org/download/)). Other targets build as usual.
 
 **The Bun build is optional**: `npm run build:binary:bun` compiles today's TypeScript (every engine) with Bun's runtime inside. It's 85–110 MB, never published, and useful where you want the whole TypeScript vigent without Node, or to run the whole pty suite through a binary. In CI, run the Binaries workflow by hand with **bun** ticked.
 
@@ -56,10 +60,10 @@ dist-bin/vigent-<target>/vigent          vigent.exe on Windows
 
 | Target | Rust target | For |
 |---|---|---|
-| `linux-x64` | `x86_64-unknown-linux-gnu` | glibc |
+| `linux-x64` | `x86_64-unknown-linux-gnu` | glibc 2.17 or newer |
 | `linux-x64-baseline` | the same build | x64 CPUs without AVX2 (Rust's x86-64 doesn't need it; kept so older installers find it) |
-| `linux-arm64` | `aarch64-unknown-linux-gnu` | glibc |
-| `linux-x64-musl`, `linux-arm64-musl` | `*-unknown-linux-musl` | Alpine and other musl systems (static) |
+| `linux-arm64` | `aarch64-unknown-linux-gnu` | glibc 2.17 or newer |
+| `linux-x64-musl`, `linux-arm64-musl` | `*-unknown-linux-musl` | Alpine and other musl systems, and glibc older than 2.17 (static, needs no libc) |
 | `darwin-arm64`, `darwin-x64` | `*-apple-darwin` | macOS |
 | `windows-x64` | `x86_64-pc-windows-msvc` | Windows, including Windows on ARM |
 
@@ -68,6 +72,21 @@ dist-bin/vigent-<target>/vigent          vigent.exe on Windows
 ```
 dist-bin/vigent-<target>.tar.gz          the folder, with README.md and LICENSE
 dist-bin/SHA256SUMS                      one "<sha256>  <archive>" line each
+```
+
+## Which Linux it runs on
+
+**The glibc builds (`linux-x64`, `linux-x64-baseline`, `linux-arm64`) need glibc 2.17 or newer**: RHEL and CentOS 7, Amazon Linux 2, Debian 8, Ubuntu 14.04, and everything since. The release builds them with `cargo zigbuild --target <triple>.2.17` on the runner (`--glibc 2.17` in `scripts/build-binary.mjs`), so they don't pick up the runner's own glibc (2.39 on `ubuntu-24.04`, which Debian 12 and Ubuntu 22.04 don't have).
+
+Two checks keep it that way: `scripts/check-glibc.mjs` fails the build when the binary asks for any newer glibc symbol version (`objdump -T`, and `objdump -p` for the weak ones a loader refuses too), and the check job runs the archive in `centos:7`, which has glibc 2.17. The container image's debian-slim (glibc 2.36) runs it as well.
+
+The musl builds are static and need no libc at all. `install.sh` installs one on musl systems, and on a glibc older than 2.17 (it asks `getconf GNU_LIBC_VERSION`, then `ldd --version`).
+
+To see what a build needs:
+
+```bash
+objdump -T dist-bin/vigent-linux-x64/vigent | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -n 1
+node scripts/check-glibc.mjs dist-bin/vigent-linux-x64/vigent 2.17
 ```
 
 ## The checks
@@ -92,14 +111,15 @@ VIGENT_TTY_BINARY=dist-bin/vigent-linux-x64/vigent VIGENT_BINARY=dist-bin/vigent
 | `scripts/build-binary.mjs` | builds it for each target into `dist-bin/`, then packs |
 | `scripts/build-binary-bun.mjs`, `src/standalone.ts`, `test/standalone-stand-in.test.mjs` | the optional Bun build and its test |
 | `scripts/export-themes.mjs` | writes `crates/vigent/src/themes.txt` from the TypeScript themes |
+| `scripts/check-glibc.mjs` | fails when a gnu binary needs a newer glibc than it's meant for |
 | `scripts/package-binaries.mjs` | packs each built target and writes `SHA256SUMS` |
-| `install.sh` | macOS and Linux: picks the target (libc, AVX2), checks the download, installs to `~/.vigent`, links `vigent` into `~/.local/bin` |
+| `install.sh` | macOS and Linux: picks the target (libc and its version, AVX2), checks the download, installs to `~/.vigent`, links `vigent` into `~/.local/bin` |
 | `install.ps1` | Windows: the same, into `%LOCALAPPDATA%\vigent`, and adds it to PATH |
 | `scripts/homebrew-formula.mjs` | writes `Formula/vigent.rb` from `SHA256SUMS`, so this repository is its own tap |
 | `docker/Dockerfile` | the binary with git on debian-slim, for `ghcr.io/farming-labs/vigent` |
 | `.github/workflows/binaries.yml` | builds Rust on each platform's own runner and packs it, checks each target on its own platform (musl in Alpine), builds and runs the image; with publishing on, attaches the archives to the release, pushes the image, commits the formula |
 
-The workflow's jobs, in order: **rust** (one per platform) → **build** (pack) → **check** (Linux x64, x64 baseline, arm64, macOS arm64 and macOS x64 under Rosetta on `macos-latest`, Windows), **check-musl** (Alpine, x64 and arm64) and **image** → **release** → **image-push** and **homebrew**. The last three need a tag and `PUBLISH_BINARIES`, and never run for the Bun build.
+The workflow's jobs, in order: **rust** (one per platform; the gnu ones with cargo-zigbuild for glibc 2.17, then `check-glibc`) → **build** (pack) → **check** (Linux x64, x64 baseline and arm64, each also in `centos:7`; macOS arm64 and macOS x64 under Rosetta on `macos-latest`, Windows), **check-musl** (Alpine, x64 and arm64) and **image** → **release** → **image-push** and **homebrew**. The last three need a tag and `PUBLISH_BINARIES`, and never run for the Bun build.
 
 ## Publishing
 
