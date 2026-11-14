@@ -69,7 +69,6 @@ suite runs no slower. The growth since milestone 1 is the port itself (about
 | `engines/choices.rs` | `src/choices.ts`, `piModels` | model lists, `model_label`, efforts, `codex debug models` | Engines |
 | `engines/pi.rs` | `src/pi-session.ts`, `pi-ui.ts` | `pi --mode rpc` per agent: requests, events, restore from its session file, extension dialogs | Engines |
 | `engines/select.rs` | `startAgent`, `chooseModel`, `chooseEffort`, `chooseEngine`, pickers | which engine/model/effort new and open agents use | Engines |
-| `engines/picker.rs` | `ChoicePicker`, fuzzy filter | the `:model`/`:effort`/`:engine` list | Engines |
 | `engines/permissions.rs` | `blocked`, `describeDenial`, `allowRules`, `commandPrograms`, `flagValue` | what a refusal says | Engines |
 | `engines/claude.rs` | `claudeAdapter`, `detectClaude` | Claude Code | Engines |
 | `engines/run.rs` | `CliSession.send` | spawns one turn of any adapter, reads its lines on threads | Engines |
@@ -89,7 +88,7 @@ suite runs no slower. The growth since milestone 1 is the port itself (about
 | `color.rs`, `vimcolors.rs`, `suggest.rs` | `src/color.ts`, `src/vimcolors.ts`, `src/suggest.ts` | colors, :hi syntax and .vim files, did-you-mean | Config |
 | `import.rs`, `follow.rs`, `themecli.rs` | `src/import.ts`, `src/follow.ts`, `src/theme-new.ts`, themeCommand | `vigent theme import/new/path/list`, following the editor | Config |
 | `theme.rs`, `themes.txt` | `src/theme.ts`, `src/palette.ts`, `src/builtin-themes.ts` | the theme engine (links, derived groups, overrides, transparency, 256 colors), theme files, palettes; themes.txt (with `@palette`/`@style` lines) is written by `scripts/export-themes.mjs` | Config |
-| `templates.rs` | `src/templates.ts` (the picker) | the `:templates` picker over Sessions' `agents::all_templates` (Enter: `start_from_template`) | Config |
+| `templates.rs` | `openTemplatePicker` | the `:templates` picker (the shared one) over Sessions' `agents::all_templates` (Enter: `start_from_template`) | Config |
 | `names.rs` | `agentNameFrom`, `slugify`, `branchName` | names | Sessions |
 | `health.rs` | `App.openHealth` | `:checkhealth` | Engines (engines part), Sessions (worktrees part) |
 | `help.rs` | `App.openHelp` | `:help` | Config |
@@ -109,7 +108,7 @@ suite runs no slower. The growth since milestone 1 is the port itself (about
 | `ui/mod.rs` | `App.render` | lays out the parts below | Windows |
 | `ui/sidebar.rs` | sidebar | sessions + engines | Windows |
 | `ui/pane.rs`, `ui/markdown.rs` | `buildPaneLines`, `renderWindow`, `src/markdown.ts` | the transcript as pane lines (plain text, item, message start, code block) and each window drawn (winbar, VISUAL, search highlight); markdown with tables, lists, quotes, links (OSC 8) | Windows |
-| `ui/picker.rs`, `ui/whichkey.rs`, `ui/icons.rs` | `src/picker.ts` ChoicePicker, `whichKeyPanel`, `ICONS` / `src/icons.ts` | pickers (fuzzy filter), which-key, icon sets and tool glyphs | Windows |
+| `ui/picker.rs`, `ui/whichkey.rs`, `ui/icons.rs` | `src/picker.ts` ChoicePicker and ThemePicker, `whichKeyPanel`, `ICONS` / `src/icons.ts` | the one picker (fuzzy filter; `Live`: the theme picker's preview), which-key, icon sets and tool glyphs | Windows |
 | `ui/dashboard.rs` | `DASHBOARD`, start screen | logo, one-key actions, engines | Windows |
 | `ui/statusline.rs`, `ui/winbar.rs` | statusline, winbar, message line | | Windows |
 | `ui/floats.rs` | `src/float.ts` | `Float` windows: rich lines, selectable rows (`on_select`), `]c`/`[c` jumps, `s` alternate | Windows |
@@ -182,9 +181,10 @@ area consumes yet (remove your flag from that list when you wire it).
 - Review: `:dash` marks waiting agents (and failed ones you aren't on) as new,
   for TypeScript's `unread` set. `:race` is the Sessions area's (`race.rs`,
   through `App::start_agent` with each racer's engine and model); its window is
-  Review's `TextFloat` (j/k, Enter opens a racer). Hooks have one runner,
-  `agents::run_hook` (`App::agents.hook_runner` in tests): worktree_created and
-  agent_finished run from agents.rs, before_merge from `review/hooks.rs`. The y/n
+  Review's `TextFloat` (j/k, Enter opens a racer). Hooks and shell commands have
+  one runner, `agents::run_hook` (`App::agents.runner()`, `hook_runner` in tests):
+  worktree_created and agent_finished run from agents.rs, before_merge from
+  `review/hooks.rs`, `:!` and `[commands]` shell steps from `commands/windows.rs`. The y/n
   question is Windows' `actions::windows::ask` (`App::ask` wraps it); Review's float (`review/float.rs`) is its
   own, and Windows can fold it into `ui/floats.rs`. Tab completion after `:race
   --engines/--models` isn't ported (Windows' completer). The Review area's tests
@@ -194,8 +194,10 @@ area consumes yet (remove your flag from that list when you wire it).
 - Windows area: `:set`, the `:map` / `:unmap` family, `:command`,
   `:delcommand`, your own commands and `:!` live in `commands/windows.rs`
   (the checklist used to give them to Config; `:hi`, `:let`, `:settings`,
-  `:trust` stay Config's). Pickers are `ui::picker::Picker`, opened with
-  `actions::windows::open_picker`; y/n questions are `actions::windows::ask`;
+  `:trust` stay Config's). Every picker is `ui::picker::Picker` (`@`, `:model`,
+  `:effort`, `:engine`, `:colorscheme`, `:templates`, a refused tool's question,
+  pi's selects), opened with `actions::windows::open_picker` into
+  `App::windows.picker`: it gets keys first and is drawn over everything; y/n questions are `actions::windows::ask`;
   floats with rows to pick are `Float::rich` with `selectable` + `on_select`.
 - Every screen row is built as `ui::text::Seg`s exactly the screen's width
   (like the TypeScript's strings) and drawn as one paragraph; a `Seg` with a
@@ -207,22 +209,19 @@ area consumes yet (remove your flag from that list when you wire it).
   screen until the theme is loaded again (Config: theme loading).
 - Config area: `:set` is `looks::exec_set` (Windows' `apply_set` isn't
   registered); `:map`/`:unmap`/`:command`/`:delcommand`/`:!`/your commands are
-  Windows'; `:templates` is Sessions' with Config's picker (`templates.rs`);
+  Windows'; `:templates` is Sessions' with Config's list (`templates.rs`);
   `--demo` is Serve's (Config's `demo.rs` went: one demo). Config's `layout.rs`
   (statusline/winbar) and `usercmd.rs` went too: the screen and your
   commands are Windows'. The theme picker filters with "the letters in order" rather than
   pi-tui's fuzzy score. `:hi Group` shows the attributes but not the colored
-  `xxx` sample. Pickers: Windows' `ui::picker`, Engines' `engines::picker`,
-  Config's theme and template pickers (`app.cfg`); one shared picker is
-  still to do.
+  `xxx` sample.
 - One implementation each where areas overlapped: `:dash` / `:dashboard` and
   `:ls` / `:buffers` / `:files` open Review's list (`review::views::open_dashboard`);
   `<C-^>` / `:b #` read `App::agents.alt` (Sessions); a split's fork is
   `App::fork_session` + `add_session` (`windows::fork_session` adds the tool
   output); `:kill` closes the windows showing the agent (`actions::windows::dropped`);
-  focus reporting is `App::focus_changed`. Two pickers remain: Windows'
-  `ui::picker` and Engines' `engines::picker` (`:model`/`:effort`/`:engine`);
-  folding the second into the first is left to those areas.
+  focus reporting is `App::focus_changed`; one picker (`ui::picker`) and one
+  shell runner (`agents::run_hook`).
 - `:theme` with no name shows the theme name; TypeScript opens the picker.
 - `:help` may still have milestone-1 wording (Config area); `:checkhealth`'s
   engines part, the sidebar's and the start screen's engines use the TypeScript text.
@@ -235,8 +234,7 @@ area consumes yet (remove your flag from that list when you wire it).
     `Err` is the message to show) and adds the fork with `app.add_session`
     (`windows::fork_session`). `App::on_screen(slot)` is the focused agent
     only; make it count every window of a split (notifications and races read it). The queue list,
-    `:worktrees` and `:templates` are plain floats until pickers exist (Enter
-    doesn't open/start one yet); the race list is Review's selectable float. `ask()` is
+    `:worktrees` are plain floats (Enter doesn't open one yet); the race list is Review's selectable float. `ask()` is
     Windows' question on the command line.
   - Engines: `:model`/`:effort` save to the agent's record through
     `engines::select::persist`, which is `App::persist`, so a restart keeps
@@ -340,7 +338,7 @@ Sessions:
 - [x] `:queue [prompt]` (the list is a float, not a picker) — **Sessions**
 - [x] `:pause`, `:resume` — **Sessions**
 - [x] `:race <task> [--engines a,b] [--models x,y] [-t tpl]`, `:race`, `:race pick`, `:race! pick` (the race window is Review's: Enter opens a racer; Tab completion is Windows'; `--models` reads `engines::choices`; in `--demo` three scripted agents race) — **Sessions**, window **Review**
-- [~] `:templates` `:template` `:tpl [name]` (no name: a float listing them, not a picker) — **Sessions**
+- [x] `:templates` `:template` `:tpl [name]` (no name: the picker) — **Sessions**
 - [~] `:tree` (and fork from a point): what CLI agents say; the tree itself is pi's (src/tree.ts, with the pi session) — **Sessions** with **Engines**
 - [x] `:worktrees` `:worktree` `:wt`, `:worktree remove[!] <branch>` — **Sessions**
 - [x] `:attach <branch>` — **Sessions**
@@ -456,7 +454,7 @@ below means it's also *used*.
 - [ ] conversation tree (`src/tree.ts`): pi's, waits for the pi session — **Sessions** with **Engines**
 - [x] riftri storage health in `:checkhealth` (`riftriHealth`) and the `:worktrees` footer — **Sessions**
 - [x] diff view, hunk review, merge, PR, transcript export, dashboard, usage — **Review**
-- [x] splits, sidebar focus, search, VISUAL, folds, marks, jumps, tool output folding, markdown (`src/markdown.ts`, links as OSC 8 printed over the frame), icons (`src/icons.ts`), styles (`src/style.ts`, see `[style]`), pickers (`src/picker.ts` ChoicePicker: `windows::open_picker`; the theme picker with live preview is Config's), confirm prompts (`windows::ask`) — **Windows**
+- [x] splits, sidebar focus, search, VISUAL, folds, marks, jumps, tool output folding, markdown (`src/markdown.ts`, links as OSC 8 printed over the frame), icons (`src/icons.ts`), styles (`src/style.ts`, see `[style]`), pickers (`src/picker.ts` ChoicePicker and ThemePicker: `windows::open_picker`), confirm prompts (`windows::ask`) — **Windows**
 - [x] alternate screen and focus reporting (`EnableFocusChange`, `App::focus_changed`) — **Windows**, **Sessions**
 - [x] desktop notification / bell when an agent finishes elsewhere, focus reporting, `[ui] notify` (`src/notify.ts`, in agents.rs) — **Sessions**
 - [x] usage float (`:usage`) — **Review**

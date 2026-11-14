@@ -4,11 +4,11 @@
 //! :map / :unmap family, :command / :delcommand, your own commands ([commands]
 //! in config.toml) and :!{command} (src/app.ts exec).
 
-use std::io::Read;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use super::{Command, Ex};
 use crate::actions::windows as w;
+use crate::agents::{last_line, took};
 use crate::app::{App, Msg};
 use crate::config::{Transparent, UiOptions};
 use crate::keys::{KeyMode, RhsValue};
@@ -449,72 +449,10 @@ fn run_steps(app: &mut App, name: String, mut steps: Vec<String>) {
     }
 }
 
-/// "3.2s", "1m 05s"
-pub fn took(ms: u128) -> String {
-    if ms < 60_000 {
-        return format!("{:.1}s", ms as f64 / 1000.0);
-    }
-    let s = (ms as f64 / 1000.0).round() as u64;
-    format!("{}m {:02}s", s / 60, s % 60)
-}
-
-fn last_line(output: &str) -> String {
-    output.lines().map(str::trim).filter(|l| !l.is_empty()).last().unwrap_or("").to_string()
-}
-
-pub struct ShellResult {
-    pub ok: bool,
-    pub code: Option<i32>,
-    pub output: String,
-    pub ms: u128,
-    pub timed_out: bool,
-}
-
-/// Run a command with a shell in `cwd`, stdout and stderr together; never fails (a failure is a result).
-pub fn run_hook(command: &str, cwd: &std::path::Path, env: &[(String, String)], timeout: Duration) -> ShellResult {
-    let started = Instant::now();
-    let child = std::process::Command::new("sh")
-        .arg("-c")
-        .arg(format!("exec 2>&1\n{command}"))
-        .current_dir(cwd)
-        .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn();
-    let mut child = match child {
-        Ok(c) => c,
-        Err(e) => return ShellResult { ok: false, code: None, output: e.to_string(), ms: 0, timed_out: false },
-    };
-    let mut stdout = child.stdout.take().unwrap();
-    let reader = std::thread::spawn(move || {
-        let mut buf = Vec::new();
-        let _ = stdout.read_to_end(&mut buf);
-        buf
-    });
-    let mut timed_out = false;
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(s)) => break Some(s),
-            Ok(None) if started.elapsed() > timeout => {
-                timed_out = true;
-                let _ = child.kill();
-                break child.wait().ok();
-            }
-            Ok(None) => std::thread::sleep(Duration::from_millis(10)),
-            Err(_) => break None,
-        }
-    };
-    let out = String::from_utf8_lossy(&reader.join().unwrap_or_default()).to_string();
-    let chars: Vec<char> = out.chars().collect();
-    let output: String = chars[chars.len().saturating_sub(4000)..].iter().collect::<String>().trim_end().to_string();
-    let code = if timed_out { None } else { status.and_then(|s| s.code()) };
-    ShellResult { ok: code == Some(0) && !timed_out, code, output, ms: started.elapsed().as_millis(), timed_out }
-}
-
 type AfterShell = Box<dyn FnOnce(&mut App, bool) + Send>;
 
 /// `:!cmd`: a shell command in the focused agent's worktree (else the repository); its output goes in the transcript.
+/// It runs as hooks do, with `App::agents.runner()` (TypeScript's hookRunner).
 pub fn run_shell(app: &mut App, command: &str, label: &str, then: Option<AfterShell>) {
     let s = app.focused();
     let slot = s.map(|s| s.slot);
@@ -528,16 +466,16 @@ pub fn run_shell(app: &mut App, command: &str, label: &str, then: Option<AfterSh
         ("VIGENT_REPO".into(), app.root.as_ref().map(|r| r.display().to_string()).unwrap_or_default()),
     ];
     app.say(format!("{label} …"), "Comment");
-    let (command, label, tx) = (command.to_string(), label.to_string(), app.tx.clone());
+    let (command, label, tx, runner) = (command.to_string(), label.to_string(), app.tx.clone(), app.agents.runner());
     std::thread::spawn(move || {
-        let r = run_hook(&command, &cwd, &env, Duration::from_secs(15 * 60));
+        let r = runner(&command, &cwd, &env, Duration::from_secs(15 * 60));
         let _ = tx.send(Msg::Run(Box::new(move |app: &mut App| {
             let how = if r.ok {
-                format!("done in {}", took(r.ms))
+                format!("done in {}", took(r.took))
             } else if r.timed_out {
-                format!("timed out after {}", took(r.ms))
+                format!("timed out after {}", took(r.took))
             } else {
-                format!("failed (exit {}) after {}", r.code.map(|c| c.to_string()).unwrap_or_else(|| "null".into()), took(r.ms))
+                format!("failed (exit {}) after {}", r.code.map(|c| c.to_string()).unwrap_or_else(|| "null".into()), took(r.took))
             };
             if let Some(s) = slot.and_then(|i| app.sessions.get_mut(i)) {
                 s.items.push(Item::Info(format!("$ {command}  ({how}){}", if r.output.is_empty() { String::new() } else { format!("\n{}", r.output) })));
@@ -626,13 +564,14 @@ mod tests {
 
     #[test]
     fn shell_commands_run_with_the_agent_env() {
+        use crate::agents::run_hook;
         let dir = std::env::temp_dir();
         let r = run_hook("echo out; echo err >&2; exit 3", &dir, &[("VIGENT_REPO".into(), "/r/shop".into())], Duration::from_secs(5));
         assert_eq!((r.ok, r.code), (false, Some(3)));
         assert_eq!(r.output, "out\nerr");
         let r = run_hook("basename $VIGENT_REPO", &dir, &[("VIGENT_REPO".into(), "/r/shop".into())], Duration::from_secs(5));
         assert!(r.ok && r.output == "shop");
-        assert_eq!(took(300), "0.3s");
-        assert_eq!(took(65_000), "1m 05s");
+        assert_eq!(took(Duration::from_millis(300)), "0.3s");
+        assert_eq!(took(Duration::from_millis(65_000)), "1m 05s");
     }
 }

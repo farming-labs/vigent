@@ -14,6 +14,17 @@ npm install -g @vigent/cli
 
 About 5 MB, most of it [riftri](https://riftri.dev)'s binary for lightweight worktrees. Needs Node.js 20+ and git. The command is `vigent`.
 
+Or the standalone binary: one file that needs git and no Node. It runs Claude Code agents for now (the npm package runs every engine), and ships from the first release built with it ([docs/binaries.md](docs/binaries.md)):
+
+```bash
+curl -fsSL https://vigent.farming-labs.dev/install.sh | sh     # macOS, Linux
+brew install farming-labs/tap/vigent                           # or Homebrew
+```
+
+```powershell
+irm https://vigent.farming-labs.dev/install.ps1 | iex          # Windows
+```
+
 ## Quick start
 
 ```bash
@@ -106,4 +117,4 @@ npm test          # build and run the test suite
 npm run demo      # scripted agents
 ```
 
-To release: bump `version` in package.json, merge, and push a matching tag (`git tag v0.4.1 && git push origin v0.4.1`). The Release workflow tests the code and publishes it with the `NPM_TOKEN` secret. The standalone binary (no Node needed) is the Rust port in `crates/vigent`, 2.8 MB (a 1.3 MB download) with riftri inside; [docs/binaries.md](docs/binaries.md) has how it's built and checked. Nothing is published yet.
+To release: bump `version` in package.json, merge, and push a matching tag (`git tag v0.4.1 && git push origin v0.4.1`). The Release workflow tests the code and publishes it with the `NPM_TOKEN` secret. The standalone binary (no Node needed) is the Rust port in `crates/vigent`, 2.8 MB (a 1.3 MB download) with riftri inside; [docs/binaries.md](docs/binaries.md) has how it's built, checked and published.
