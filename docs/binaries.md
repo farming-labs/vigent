@@ -10,6 +10,8 @@ vigent as one file that needs git and nothing else: no Node. The binary is the R
 - [The checks](#the-checks)
 - [The pieces](#the-pieces)
 - [Publishing](#publishing)
+  - [The Homebrew tap](#the-homebrew-tap)
+  - [Signing for macOS](#signing-for-macos)
 - [How people will install it](#how-people-will-install-it)
 
 ## What's in it
@@ -116,11 +118,12 @@ VIGENT_TTY_BINARY=dist-bin/vigent-linux-x64/vigent VIGENT_BINARY=dist-bin/vigent
 | `website/scripts/copy-installers.mjs` | copies `install.sh` and `install.ps1` into the website's build, which serves them at `vigent.farming-labs.dev/install.sh` and `/install.ps1` |
 | `install.sh` | macOS and Linux: picks the target (libc and its version, AVX2), checks the download, installs to `~/.vigent`, links `vigent` into `~/.local/bin` |
 | `install.ps1` | Windows: the same, into `%LOCALAPPDATA%\vigent`, and adds it to PATH |
+| `scripts/sign-macos.sh` | signs and notarizes a macOS binary when the Apple secrets are set; otherwise keeps it ad-hoc signed |
 | `scripts/homebrew-formula.mjs` | writes `Formula/vigent.rb` from `SHA256SUMS`, for the tap [farming-labs/homebrew-tap](https://github.com/farming-labs/homebrew-tap) |
 | `docker/Dockerfile` | the binary with git on debian-slim, for `ghcr.io/farming-labs/vigent` |
 | `.github/workflows/binaries.yml` | builds Rust on each platform's own runner and packs it, checks each target on its own platform (musl in Alpine), builds and runs the image; with publishing on, attaches the archives to the release, pushes the image, commits the formula to the tap |
 
-The workflow's jobs, in order: **rust** (one per platform; the gnu ones with cargo-zigbuild for glibc 2.17, then `check-glibc`) → **build** (pack) → **check** (Linux x64, x64 baseline and arm64, each also in `centos:7`; macOS arm64 and macOS x64 under Rosetta on `macos-latest`, Windows), **check-musl** (Alpine, x64 and arm64) and **image** → **release** → **image-push** and **homebrew**. The last three need a tag and `PUBLISH_BINARIES`, and never run for the Bun build.
+The workflow's jobs, in order: **rust** (one per platform; the gnu ones with cargo-zigbuild for glibc 2.17, then `check-glibc`; the darwin ones signed, and notarized when the Apple secrets are set) → **build** (pack) → **check** (Linux x64, x64 baseline and arm64, each also in `centos:7`; macOS arm64 and macOS x64 under Rosetta on `macos-latest`, Windows), **check-musl** (Alpine, x64 and arm64) and **image** → **release** → **image-push** and **homebrew**. The last three need a tag and `PUBLISH_BINARIES`, and never run for the Bun build (its `stand_in` output; **release** also refuses any archive over 20 MB, which only the Bun build reaches).
 
 ## Publishing
 
@@ -141,6 +144,29 @@ One-time setup, by a maintainer of the `farming-labs` organization:
 
 To check it by hand after a release: `brew install farming-labs/tap/vigent && vigent --version`.
 
+### Signing for macOS
+
+In the darwin jobs, `scripts/sign-macos.sh` signs the binary with a Developer ID and has Apple notarize it, before it's packed, when these six repository secrets are set (Settings → Secrets and variables → Actions):
+
+| Secret | What it is |
+|---|---|
+| `APPLE_CERTIFICATE_P12` | the **Developer ID Application** certificate with its private key, exported from Keychain Access as a `.p12`, then base64: `base64 -i vigent.p12 \| pbcopy` |
+| `APPLE_CERTIFICATE_PASSWORD` | the password the `.p12` was exported with |
+| `APPLE_SIGNING_IDENTITY` | the certificate's name, e.g. `Developer ID Application: Farming Labs (AB12CD34EF)` (`security find-identity -v -p codesigning`) |
+| `APPLE_ID` | the Apple ID (email) of a member of the team, used to notarize |
+| `APPLE_TEAM_ID` | the team's ID, the 10 characters in the identity's parentheses |
+| `APPLE_APP_PASSWORD` | an app-specific password for that Apple ID (account.apple.com → Sign-In and Security → App-Specific Passwords) |
+
+With them, the job imports the certificate into a temporary keychain (deleted at the end), runs `codesign --force --options runtime --timestamp --sign "$APPLE_SIGNING_IDENTITY"` (the hardened runtime and a secure timestamp, which notarization requires), zips the binary and sends it with `xcrun notarytool submit --wait`, and fails unless Apple answers `Accepted` (printing the notary log when it doesn't). Then `codesign --verify --strict` and Gatekeeper's verdict (`spctl --assess --type open --context context:primary-signature`; spctl's `execute` check only rates apps) are printed. A bare command-line binary **can't be stapled** (`stapler` takes apps, packages and disk images), so Gatekeeper looks the ticket up online the first time a downloaded copy runs. Some secrets set and others not fails the job, rather than quietly shipping it unsigned.
+
+Without the secrets (and in pull requests from forks, which get none), the binary keeps the ad-hoc signature the linker gives it (one without gets an ad-hoc one: Apple silicon won't run an unsigned binary), and the job prints a notice. The check job verifies the signature after packing either way.
+
+An ad-hoc signed binary runs as it is when installed with `install.sh` or Homebrew, which don't mark their downloads as quarantined. Downloaded in a browser, macOS refuses it until the quarantine flag is removed:
+
+```bash
+xattr -d com.apple.quarantine ./vigent
+```
+
 ## How people will install it
 
 Once a release has binaries (none does yet, so these don't work today):
@@ -159,9 +185,7 @@ Or, with Node 20 or newer, the npm package, which runs every engine: `npm instal
 
 **The installers on the website are the files in this repository.** `install.sh` and `install.ps1` at the root are the only copies: the website's `dev`, `build` and `preview` scripts run `website/scripts/copy-installers.mjs` first, which copies them into `website/public/` (ignored by git), and Farm serves `public/` at the site's root, as `text/plain` (`routeRules` in `website/farm.config.ts`). So a change to an installer reaches `vigent.farming-labs.dev` with the next deploy of the site, and the archives always come from the GitHub release, never from the site. The build fails when a root installer is missing.
 
-`VIGENT_VERSION=0.9.3` installs that version, and running the installer again updates. The container has no agent CLIs in it: build an image `FROM ghcr.io/farming-labs/vigent` and add the ones you use. The macOS binary isn't signed: installed with `curl` or Homebrew it runs as it is, while one downloaded in a browser has to be allowed in System Settings first.
-
-Still to decide: signing for macOS.
+`VIGENT_VERSION=0.9.3` installs that version, and running the installer again updates. The container has no agent CLIs in it: build an image `FROM ghcr.io/farming-labs/vigent` and add the ones you use. On macOS, a binary from a release built without the Apple secrets is only ad-hoc signed: installed with `curl` or Homebrew it runs as it is, while one downloaded in a browser needs `xattr -d com.apple.quarantine ./vigent` first ([Signing for macOS](#signing-for-macos)).
 
 To try a build locally:
 
