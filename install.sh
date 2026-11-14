@@ -16,12 +16,29 @@
 set -eu
 
 REPO="farming-labs/vigent"
+# the oldest glibc the linux-x64 and linux-arm64 builds start on (they're built
+# against it); an older system gets the static musl build, which needs no libc
+GLIBC_MIN=2.17
 INSTALL="${VIGENT_INSTALL:-$HOME/.vigent}"
 BIN_DIR="${VIGENT_BIN_DIR:-$HOME/.local/bin}"
 
 say() { printf '%s\n' "$*"; }
 fail() { printf 'vigent install: %s\n' "$*" >&2; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
+
+# this machine's glibc version (2.31), or nothing when it can't tell
+glibc_version() {
+	v="$(getconf GNU_LIBC_VERSION 2>/dev/null | sed -n 's/^glibc \([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p')"
+	[ -n "$v" ] || v="$( (ldd --version 2>&1 || true) | sed -n '1s/.* \([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p')"
+	echo "$v"
+}
+
+# version_lt 2.12 2.17: true when the first glibc version is older
+version_lt() {
+	a_major="${1%%.*}"; a_minor="${1#*.}"; a_minor="${a_minor%%.*}"
+	b_major="${2%%.*}"; b_minor="${2#*.}"; b_minor="${b_minor%%.*}"
+	[ "$a_major" -lt "$b_major" ] || { [ "$a_major" -eq "$b_major" ] && [ "$a_minor" -lt "$b_minor" ]; }
+}
 
 detect_target() {
 	os="$(uname -s)"
@@ -39,7 +56,12 @@ detect_target() {
 			;;
 		Linux)
 			suffix=""
+			glibc="$(glibc_version)"
 			if ls /lib/ld-musl-* >/dev/null 2>&1 || (ldd --version 2>&1 || true) | grep -qi musl; then
+				suffix="-musl"
+			elif [ -n "$glibc" ] && version_lt "$glibc" "$GLIBC_MIN"; then
+				# too old for the glibc build: the static one runs anywhere
+				printf 'glibc %s is older than %s: installing the static musl build\n' "$glibc" "$GLIBC_MIN" >&2
 				suffix="-musl"
 			elif [ "$arch" = x64 ] && [ -r /proc/cpuinfo ] && ! grep -qw avx2 /proc/cpuinfo; then
 				# an older CPU: the build that doesn't need AVX2

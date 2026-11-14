@@ -14,6 +14,7 @@
  */
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -175,6 +176,33 @@ test("install.sh: checks the download, installs vigent and riftri, and links vig
 	assert.match(none.stderr, /couldn't download .*vigent-plan9-mips\.tar\.gz/);
 });
 
+const glibcHost = process.platform === "linux" && ["x64", "arm64"].includes(process.arch) && Boolean(process.report?.getReport()?.header?.glibcVersionRuntime);
+test("install.sh: a glibc older than the gnu build needs gets the static musl build", { skip: skip || (!glibcHost ? "needs Linux with glibc" : false), timeout: 60000 }, () => {
+	// a machine on glibc 2.12, with the release's musl archive (the binary under test stands in for it: only the name matters)
+	const old = path.join(tmp, "old-glibc");
+	fs.mkdirSync(old);
+	fs.writeFileSync(path.join(old, "getconf"), "#!/bin/sh\necho 'glibc 2.12'\n");
+	fs.writeFileSync(path.join(old, "ldd"), "#!/bin/sh\necho 'ldd (GNU libc) 2.12'\n");
+	for (const f of ["getconf", "ldd"]) fs.chmodSync(path.join(old, f), 0o755);
+	const target = `linux-${process.arch}-musl`;
+	const release = path.join(tmp, "musl-release");
+	fs.mkdirSync(path.join(release, `vigent-${target}`), { recursive: true });
+	fs.copyFileSync(binary, path.join(release, `vigent-${target}`, "vigent"));
+	fs.chmodSync(path.join(release, `vigent-${target}`, "vigent"), 0o755);
+	execFileSync("tar", ["-czf", `vigent-${target}.tar.gz`, `vigent-${target}`], { cwd: release });
+	const sum = createHash("sha256").update(fs.readFileSync(path.join(release, `vigent-${target}.tar.gz`))).digest("hex");
+	fs.writeFileSync(path.join(release, "SHA256SUMS"), `${sum}  vigent-${target}.tar.gz\n`);
+
+	const to = path.join(tmp, "installed-musl");
+	const r = spawnSync("sh", [path.join(import.meta.dirname, "..", "install.sh")], {
+		encoding: "utf8",
+		env: { ...process.env, PATH: `${old}${path.delimiter}${process.env.PATH}`, HOME: tmp, VIGENT_INSTALL: to, VIGENT_BIN_DIR: path.join(tmp, "musl-bin"), VIGENT_DOWNLOAD_BASE: `file://${release}` },
+	});
+	assert.equal(r.status, 0, r.stderr);
+	assert.match(r.stderr, /glibc 2\.12 is older than 2\.17: installing the static musl build/);
+	assert.match(r.stdout, new RegExp(`downloading vigent-${target}\\.tar\\.gz`));
+});
+
 test("install.ps1 (Windows): checks the download, installs vigent.exe and riftri.exe, and leaves PATH alone when asked", { skip: skip || (!windows ? "the PowerShell installer is for Windows" : false), timeout: 120000 }, () => {
 	const built = path.dirname(path.dirname(binary));
 	const installer = path.join(import.meta.dirname, "..", "install.ps1");
@@ -223,4 +251,18 @@ test("the Homebrew formula: each platform's archive and checksum at this version
 		const check = spawnSync("ruby", ["-c", file], { encoding: "utf8" });
 		assert.equal(check.status, 0, check.stderr);
 	}
+});
+
+test("check-glibc: the newest glibc a binary asks for, compared as versions", async () => {
+	const { glibcVersions, older } = await import("../scripts/check-glibc.mjs");
+	const dump = [
+		"0000000000000000      DF *UND*  0000000000000000 (GLIBC_2.2.5) write",
+		"0000000000000000      DF *UND*  0000000000000000  GLIBC_2.17  clock_gettime",
+		"0000000000000000   w  DF *UND*  0000000000000000 (GLIBC_PRIVATE) _dl_x",
+		"    0x069691b9 0x02 07 GLIBC_2.9",
+		"    0x06969197 0x02 05 GLIBC_2.39",
+	].join("\n");
+	assert.deepEqual(glibcVersions(dump), ["2.2.5", "2.9", "2.17", "2.39"]);
+	assert.ok(older("2.9", "2.17") && older("2.17", "2.39") && older("2.2.5", "2.3"));
+	assert.ok(!older("2.17", "2.17") && !older("2.39", "2.17"));
 });
