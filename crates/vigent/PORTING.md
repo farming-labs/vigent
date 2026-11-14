@@ -1,0 +1,463 @@
+# Porting vigent to Rust
+
+The TypeScript vigent in `src/*.ts` is the spec. This crate has to become a
+1:1 replacement: the same features, keys, commands, screen text, config files
+and on-disk records, so the repository's tests pass when they drive this
+binary. This file maps the crate, names the extension points each area builds
+on, and lists every TypeScript feature with the area that owns it.
+
+Six areas port in parallel, each in its own worktree: **Engines**,
+**Sessions** (Restore included), **Review**, **Windows**, **Config**,
+**Serve**. Each area owns a set of files; adding a feature should mostly mean
+adding to your own files, so merges stay clean.
+
+## Build and test
+
+```sh
+npm ci && npx tsc                       # dist/, which the tests import
+npm run build:binary                    # dist-bin/vigent-linux-x64/vigent
+(cd crates/vigent && cargo test --locked)
+B=$PWD/dist-bin/vigent-linux-x64/vigent
+VIGENT_TTY_BINARY=$B VIGENT_BINARY=$B node --test --test-timeout=90000 test/<file>.test.mjs
+npm test                                # the TypeScript; must keep passing
+```
+
+Only tests that open a pty (`Tty`) or run the binary exercise Rust; the rest
+import `dist/`. Don't change tests or TypeScript to make Rust pass. A test
+that can't apply to a native binary stays, and gets reported with the reason.
+
+Worktrees made by riftri are OverlayFS mounts. Remove test worktrees with
+`vigent worktree remove <branch> --force` before deleting folders, and check
+that `mount | grep -c vigent-` is 0 at the end.
+
+Size matters: std over crates, no async runtime, no HTTP framework. The
+release profile is size-tuned. After the foundation the binary is 1,797,880
+bytes (1.5 MB before; the config loader, the keymap and a hand-written TOML
+reader account for the rest. `toml_edit` would have added ~170 KB, and
+`src/config-edit.ts` edits line by line anyway). With the Sessions area it is
+2,240,584 bytes: records, restore, races, templates, hooks, notifications,
+and riftri's inspect/repair/storage accounting (~90 KB of that is
+`storage_accounting` for the "N worktrees: X of files in Y on disk" line;
+`riftri_health` uses riftri's storage probe instead of `doctor`, which would
+add ~100 KB more). With Engines (every adapter, pi's RPC session, pickers) and Review
+(diff, hunk review, landing, dashboard) merged on top it is 2,595,432 bytes. The Windows area (splits,
+line editor, search, VISUAL, markdown, pickers, which-key, the TypeScript's
+screen layout) was 2,199,752 bytes on its own branch; its only new dependency
+is `libc` (already linked, for the statusline clock's local time).
+With all six areas merged it was 3,405,168 bytes at `opt-level = "s"`;
+`opt-level = "z"` brings it to 2,970,512 (a 1.3 MB archive), and the pty
+suite runs no slower. The growth since milestone 1 is the port itself (about
+4,500 lines of Rust then, 30,000 now); `serde` and `libc` are the only new crates.
+
+## Module map
+
+| Rust | TypeScript | What | Owner |
+|---|---|---|---|
+| `main.rs` | `src/main.ts` | declares modules, calls `cli::main` | shared |
+| `cli.rs` | `src/cli.ts` | subcommands (`SUBCOMMANDS`), start flags (`StartOptions`, `START_FLAGS`), startup: config, keymap, theme | shared (add rows) |
+| `tui.rs` | `src/tui.ts` | terminal setup, the loop (draw, key/paste, messages, tick), signals | shared |
+| `app.rs` | `src/app.ts` | `App`: modes, sessions, focus, input lines, message line, keymap + sequencer, per-area state; `Msg` | shared (keep small) |
+| `session.rs` | `src/session.ts`, `CliSession` in `src/cli-engines.ts` | one agent: states, queue, hold/release, pause/resume, abort, transcript items, folding engine events | Sessions |
+| `records.rs` | `src/agents.ts` | the agent record in `.git/worktrees/<n>/vigent/agent.json`: format (unknown keys kept), load/save/update, `set_detached`, `restorable`, `reopenable` (riftri views repaired first), `iso_now` | Sessions (Restore) |
+| `agents.rs` | `App.startAgent`, `killFocused`, `execAttach`, `execWorktree`, `execQueue`, `watchState`, hooks in `src/app.ts`; `reopen`, `movedOffPi`, `persist`, `forkSession` in `src/cli.ts`; `src/notify.ts`, `src/hooks.ts`, `src/templates.ts` | `impl App` for agents' lives: start (worktree in the background, record saved when it's made), restore at startup, `:kill`/`:attach`/`:worktrees`, queue/pause/resume, forks for splits (`fork_session`, `add_session`), notifications (bell, OSC 9, ◆, focus reporting), `worktree_created`/`agent_finished` hooks, templates, y/n questions (`ask`); its state is `App::agents` | Sessions |
+| `tree.rs` | `src/tree.ts` | `:tree` rows from pi's session tree (`flatten`); the pi session feeds it | Sessions |
+| `race.rs` | `src/race.ts`, `App.execRace`/`startRace`/`watchRace`/`openRace`/`pickRacer` | `:race` | Sessions |
+| `engines/mod.rs` | `src/cli-engines.ts`, `src/engines.ts` | `Adapter` trait, `RunOpts`, `Ev`, `EngineInfo`, `KNOWN`, `ADAPTERS` + custom registry (`register_custom`), `quick`/`detect_all`, `default_engine` (auto), `Engines` state, `model_text` | Engines |
+| `engines/{codex,opencode,gemini,cursor}.rs` | the other adapters, `detectCodex`... | args, parser, detection, models | Engines |
+| `engines/custom.rs` | `customAdapter`, `customInfo` | `[engines.<id>] command = [...]` | Engines |
+| `engines/detect.rs` | `run`, `onPath`, `detectPi`, `piAgentDir` | env-explicit command runs with a timeout | Engines |
+| `engines/choices.rs` | `src/choices.ts`, `piModels` | model lists, `model_label`, efforts, `codex debug models` | Engines |
+| `engines/pi.rs` | `src/pi-session.ts`, `pi-ui.ts` | `pi --mode rpc` per agent: requests, events, restore from its session file, extension dialogs | Engines |
+| `engines/select.rs` | `startAgent`, `chooseModel`, `chooseEffort`, `chooseEngine`, pickers | which engine/model/effort new and open agents use | Engines |
+| `engines/picker.rs` | `ChoicePicker`, fuzzy filter | the `:model`/`:effort`/`:engine` list | Engines |
+| `engines/permissions.rs` | `blocked`, `describeDenial`, `allowRules`, `commandPrograms`, `flagValue` | what a refusal says | Engines |
+| `engines/claude.rs` | `claudeAdapter`, `detectClaude` | Claude Code | Engines |
+| `engines/run.rs` | `CliSession.send` | spawns one turn of any adapter, reads its lines on threads | Engines |
+| `keys.rs` | `src/keys.ts` | notation, `ACTIONS` (every name), `DEFAULT_KEYS`, `Rhs`, `Keymap`, `build_keymap`, `Sequencer` (timeoutlen), `replay_next` | Config (mappings), shared tables |
+| `actions/` | `App.runAction` | handlers by action name, one file per area | each area its file |
+| `commands/` | `App.exec` | ex commands, one file per area | each area its file |
+| `config.rs` | `src/config.ts`, `templates.ts`, `commands.ts`, `layout.ts`, `style.ts`, `hooks.ts` (names) | every section into structs, warnings, gating, project layering | Config |
+| `toml.rs` | smol-toml | TOML reader into `Val` (ordered tables) | Config |
+| `worktree.rs` | `src/worktree.ts`, `src/riftri.ts` | plan/make/list/find/remove worktrees with `[worktree]` config, `RIFTRI_BINARY`, branch deletion when merged, riftri ownership/backends/views/gc/health, diff stat from the fork point | Sessions |
+| `trust.rs` | `src/trust.ts` | trusted project files (sha256), `:trust`, `vigent trust` | Config |
+| `config_edit.rs` | `src/config-edit.ts` | one value set in config.toml, comments kept | Config |
+| `settings.rs` | `src/settings.ts`, `openSettings` | the settings panel (also :permissions'), `ConfigState` (`app.cfg`) | Config |
+| `permissions.rs` | `src/permissions.ts`, `openPermissions` | permission helpers, the panel, saving and reloading | Config |
+| `looks.rs` | `openThemePicker`, `saveTheme`, `execHighlight`, `applySetCommand` | :colorscheme picker, :theme save, :hi, :set | Config |
+| `style.rs` | `src/style.ts`, `src/icons.ts`, `ICONS` | the style in effect and the glyphs (`style::icons(app)`) | Config |
+| `color.rs`, `vimcolors.rs`, `suggest.rs` | `src/color.ts`, `src/vimcolors.ts`, `src/suggest.ts` | colors, :hi syntax and .vim files, did-you-mean | Config |
+| `import.rs`, `follow.rs`, `themecli.rs` | `src/import.ts`, `src/follow.ts`, `src/theme-new.ts`, themeCommand | `vigent theme import/new/path/list`, following the editor | Config |
+| `theme.rs`, `themes.txt` | `src/theme.ts`, `src/palette.ts`, `src/builtin-themes.ts` | the theme engine (links, derived groups, overrides, transparency, 256 colors), theme files, palettes; themes.txt (with `@palette`/`@style` lines) is written by `scripts/export-themes.mjs` | Config |
+| `templates.rs` | `src/templates.ts` (the picker) | the `:templates` picker over Sessions' `agents::all_templates` (Enter: `start_from_template`) | Config |
+| `names.rs` | `agentNameFrom`, `slugify`, `branchName` | names | Sessions |
+| `health.rs` | `App.openHealth` | `:checkhealth` | Engines (engines part), Sessions (worktrees part) |
+| `help.rs` | `App.openHelp` | `:help` | Config |
+| `review/` | `src/review.ts`, `hunks.ts`, `hunk-review.ts`, `diffview.ts`, `export.ts`, `hooks.ts` (before_merge), `float.ts` (TextFloat) | `Review` state; `land.rs` merge/PR, `hunks.rs` diff + drop/restore, `diffview.rs`, `hunk_review.rs` (`:review` window), `float.rs` (selectable/jumping float, also the `:race` window), `views.rs` (`:diff` `:review` `:merge` `:pr` `:dash` `:cost`), `hooks.rs` (before_merge), `export.rs` (`:w`), `usage.rs`. Hooks into the App: `review::key` in `App::key`, `review::draw` in `ui::draw` | Review |
+| `windows.rs` | `src/windows.ts` | the split layout (`Layout`: tree, rects, split/close/resize/neighbour) and the area's state on `App::windows` (cursors, history, search, marks, jumps, VISUAL, picker, y/n question, sidebar focus, folds, your commands); `fork_session` | Windows |
+| `actions/windows.rs` | `App.handleInput`, `runAction` | every key first (`key`), counts, marks, the line editor, completion, search, VISUAL, folds, yank (OSC 52), window keys, sidebar keys, the start screen's keys, `@` picker, `ask` | Windows |
+| `commands/windows.rs` | `App.exec` | `:sp :vs :only :close :wincmd :b :bn :bp :ls :dash :noh :marks :jumps :history :set :map… :unmap… :command :delcommand :!`, your commands | Windows |
+| `line_edit.rs` | `src/line-edit.ts` | `LineBuffer`, `LineEditor` (vim NORMAL on a line), `HistoryWalk`, `remember` | Windows |
+| `completion.rs` | `src/completion.ts`, `src/suggest.ts`, `completeRaceArg` | `:` line completion, `closest` | Windows |
+| `search.rs` | `src/search.ts` | smartcase occurrences, hits, wrapscan | Windows |
+| `printable.rs` | `src/printable.ts`, `oneRow` | control characters out of agent text and screen rows | Windows |
+| `attach.rs` | `src/attach.ts` | files `@` offers, `mentionable` | Windows |
+| `serve.rs` | `App.execServe`, `serveHost`, `openServeInfo`, `agentSummary`/`itemJson`/`preview` in `src/serve.ts` | `Serve` state (server, page versions, demo), `:serve`, `--serve`, `AppHost` (the server's calls run on the UI thread through `Msg::Run`) | Serve |
+| `serve/http.rs` | `startServer`, `newAccessCode`, `lanAddresses` | the HTTP server: std `TcpListener`, a thread per connection, SSE broadcaster, auth and lock-out, routes; `Host` trait (tests pass their own) | Serve |
+| `serve/page.rs`, `serve/page.html` | `src/serve-page.ts`, `extractPalette` | the phone page (page.html is `servePage`'s output with @@placeholders@@) | Serve |
+| `serve/demo.rs` | `src/demo.ts`, `DemoSession` | demo mode: scripted agents, played on a thread | Serve |
+| `ui/mod.rs` | `App.render` | lays out the parts below | Windows |
+| `ui/sidebar.rs` | sidebar | sessions + engines | Windows |
+| `ui/pane.rs`, `ui/markdown.rs` | `buildPaneLines`, `renderWindow`, `src/markdown.ts` | the transcript as pane lines (plain text, item, message start, code block) and each window drawn (winbar, VISUAL, search highlight); markdown with tables, lists, quotes, links (OSC 8) | Windows |
+| `ui/picker.rs`, `ui/whichkey.rs`, `ui/icons.rs` | `src/picker.ts` ChoicePicker, `whichKeyPanel`, `ICONS` / `src/icons.ts` | pickers (fuzzy filter), which-key, icon sets and tool glyphs | Windows |
+| `ui/dashboard.rs` | `DASHBOARD`, start screen | logo, one-key actions, engines | Windows |
+| `ui/statusline.rs`, `ui/winbar.rs` | statusline, winbar, message line | | Windows |
+| `ui/floats.rs` | `src/float.ts` | `Float` windows: rich lines, selectable rows (`on_select`), `]c`/`[c` jumps, `s` alternate | Windows |
+| `ui/text.rs` | `visibleWidth`, wrap | width, fit, pad, wrap | Windows |
+
+## Extension points
+
+**An ex command.** Add a `Command` to `COMMANDS` in `commands/<area>.rs`:
+
+```rust
+Command { name: "pause", aliases: &[], also: None, run: pause },
+fn pause(app: &mut App, ex: &Ex) { /* ex.arg, ex.raw, ex.bang, ex.name */ }
+```
+
+`name!` reaches the same command with `ex.bang` set unless `name!` is listed
+itself. `also: Some(fn(&str) -> bool)` claims names a list can't spell
+(`nnoremap`, `vunmap`, capitalized user commands). `:!cmd` runs the command
+named `"!"`. Unknown names say `E492: Not an editor command: <name>`, as in
+TypeScript. A unit test fails if two areas claim the same name.
+
+**A key action.** The name and description are in `keys::ACTIONS` already
+(all of `src/keys.ts`); add the handler to `ACTIONS` in `actions/<area>.rs`:
+
+```rust
+Action { name: "fold.toggle", run: fold_toggle },
+fn fold_toggle(app: &mut App, arg: Option<&str>) { ... }
+```
+
+Every default key of the TypeScript vigent is bound from the start
+(`keys::DEFAULT_KEYS`); an action without a handler does nothing, so keys
+light up as areas port them. Counts (`3gt`, `REPEATABLE`, `countDigit`) are
+the Windows area's, in `App::feed`.
+
+**An engine.** A file `engines/<id>.rs` with a type implementing `Adapter`
+(`id`, `default_args`, `args(prompt, &RunOpts)`, `parser()`, and optionally
+`raw`, `can_fork`, `fork_args`, `models`, `efforts`, `detect`), plus one line
+in `engines::ADAPTERS`. The sidebar, start screen, `:checkhealth` and new
+agents read `KNOWN` and the registry, so nothing else changes. A parser is a
+`Box<dyn FnMut(&Value) -> Vec<Ev>>` and may keep state between lines. New
+event kinds are folded into the transcript in `Session::apply`. pi is not a
+CLI adapter in TypeScript (it's an RPC session, `src/pi-session.ts`); give
+`Session` an engine-specific runner for it rather than forcing it into
+`Adapter`. Custom engines (`[engines.<id>] command = [...]`) are parsed into
+`config.custom_engines`; turn each into an adapter (`customAdapter`).
+
+**Per-area state.** `App::engines`, `App::review`, `App::windows`,
+`App::serve` are each area's own struct, in its own file. Add fields there,
+not to `App`. Per-agent state goes on `Session`.
+
+**Work off the UI thread.** Send `Msg::Run(Box::new(move |app| ...))` from
+any thread; it runs on the UI thread with `&mut App`. No new `Msg` variant is
+needed.
+
+**A part of the screen.** A new file in `ui/` that returns lines or draws
+into a `Rect`, and one call in `ui::draw`. Floats are `ui::floats::Float`
+(title + lines in highlight groups); pickers and confirm prompts extend it.
+
+**A config section.** An arm in `config::load_str` (and a struct field).
+`[ui]` options: a line in `UI_ALIASES` and an arm in `set_option`. Warnings
+use the TypeScript wording; gated keys (what runs programs) go in `gated`.
+`config::is_trusted` is a stub returning false (Config area: sha256 in
+`$XDG_STATE_HOME/vigent/trusted.json`, as `src/trust.ts`).
+
+**A subcommand.** A `Sub` in `cli::SUBCOMMANDS`. **A start flag.** A field in
+`StartOptions` and a row in `START_FLAGS`; `cli::main` warns about flags no
+area consumes yet (remove your flag from that list when you wire it).
+
+## Differences to know about
+
+- Review: `:dash` marks waiting agents (and failed ones you aren't on) as new,
+  for TypeScript's `unread` set. `:race` is the Sessions area's (`race.rs`,
+  through `App::start_agent` with each racer's engine and model); its window is
+  Review's `TextFloat` (j/k, Enter opens a racer). Hooks have one runner,
+  `agents::run_hook` (`App::agents.hook_runner` in tests): worktree_created and
+  agent_finished run from agents.rs, before_merge from `review/hooks.rs`. The y/n
+  question is Windows' `actions::windows::ask` (`App::ask` wraps it); Review's float (`review/float.rs`) is its
+  own, and Windows can fold it into `ui/floats.rs`. Tab completion after `:race
+  --engines/--models` isn't ported (Windows' completer). The Review area's tests
+  in `test/` (review, hunks, race, counts, usage, and project-config's hook
+  tests) import `dist/`; their cases are mirrored as Rust unit tests under
+  `review/` (counts are the Windows area's).
+- Windows area: `:set`, the `:map` / `:unmap` family, `:command`,
+  `:delcommand`, your own commands and `:!` live in `commands/windows.rs`
+  (the checklist used to give them to Config; `:hi`, `:let`, `:settings`,
+  `:trust` stay Config's). Pickers are `ui::picker::Picker`, opened with
+  `actions::windows::open_picker`; y/n questions are `actions::windows::ask`;
+  floats with rows to pick are `Float::rich` with `selectable` + `on_select`.
+- Every screen row is built as `ui::text::Seg`s exactly the screen's width
+  (like the TypeScript's strings) and drawn as one paragraph; a `Seg` with a
+  `link` becomes a terminal hyperlink (`ui::write_links`, after the frame).
+- `App::input` / `App::cmd` stay plain strings; their cursors are
+  `App::windows.input_cursor` / `cmd_cursor`, which go to the end whenever
+  the text changes behind them (as setting a LineBuffer's text does).
+- `:set termguicolors` / `transparent` change the option but not the colors on
+  screen until the theme is loaded again (Config: theme loading).
+- Config area: `:set` is `looks::exec_set` (Windows' `apply_set` isn't
+  registered); `:map`/`:unmap`/`:command`/`:delcommand`/`:!`/your commands are
+  Windows'; `:templates` is Sessions' with Config's picker (`templates.rs`);
+  `--demo` is Serve's (Config's `demo.rs` went: one demo). Config's `layout.rs`
+  (statusline/winbar) and `usercmd.rs` went too: the screen and your
+  commands are Windows'. The theme picker filters with "the letters in order" rather than
+  pi-tui's fuzzy score. `:hi Group` shows the attributes but not the colored
+  `xxx` sample. Pickers: Windows' `ui::picker`, Engines' `engines::picker`,
+  Config's theme and template pickers (`app.cfg`); one shared picker is
+  still to do.
+- One implementation each where areas overlapped: `:dash` / `:dashboard` and
+  `:ls` / `:buffers` / `:files` open Review's list (`review::views::open_dashboard`);
+  `<C-^>` / `:b #` read `App::agents.alt` (Sessions); a split's fork is
+  `App::fork_session` + `add_session` (`windows::fork_session` adds the tool
+  output); `:kill` closes the windows showing the agent (`actions::windows::dropped`);
+  focus reporting is `App::focus_changed`. Two pickers remain: Windows'
+  `ui::picker` and Engines' `engines::picker` (`:model`/`:effort`/`:engine`);
+  folding the second into the first is left to those areas.
+- `:theme` with no name shows the theme name; TypeScript opens the picker.
+- `:help` may still have milestone-1 wording (Config area); `:checkhealth`'s
+  engines part, the sidebar's and the start screen's engines use the TypeScript text.
+- When the terminal hangs up, crossterm reads EOF in a loop; tui.rs now exits
+  1.5 s after SIGHUP/SIGTERM/SIGINT if the loop hasn't, and stops vigent's
+  process group (its agents) when it leads one. Before, a killed pty left vigent
+  spinning, with its pi still running.
+- Sessions area, what other areas hook into:
+  - Windows: a split on the same agent calls `app.fork_session(slot)` (an
+    `Err` is the message to show) and adds the fork with `app.add_session`
+    (`windows::fork_session`). `App::on_screen(slot)` is the focused agent
+    only; make it count every window of a split (notifications and races read it). The queue list,
+    `:worktrees` and `:templates` are plain floats until pickers exist (Enter
+    doesn't open/start one yet); the race list is Review's selectable float. `ask()` is
+    Windows' question on the command line.
+  - Engines: `:model`/`:effort` save to the agent's record through
+    `engines::select::persist`, which is `App::persist`, so a restart keeps
+    them. pi agents reopen on pi (`engines/pi.rs` resumes from
+    `records::agent_state_dir`/sessions); without pi on PATH they move to the
+    engine new agents use (`movedOffPi`, `App::new_agent_engine()`), else say
+    `error: pi isn't installed` and the hint. `select::startup` runs before
+    `App::restore`, so `--engine` and config's `engine` decide where they move.
+    `:tree` rows come from `tree::flatten`; the pi session doesn't hand it
+    pi's tree yet.
+  - Review: `:dash`/`:cost`/`:usage` read `Session::tokens`/`cost` (restored
+    from the record; `cost` is `None` until the engine prices a run) and
+    `session::total_usage`/`format_usage`.
+- Serve area:
+  - The page's agent ids are slot + 1 (TypeScript's start at 1 and count up the
+    same way); an agent's `version` is bumped when what the page shows of it
+    changes (a fingerprint the server compares), not on every emit.
+  - The event stream is polled: the agent list is built on the UI thread every
+    120 ms while a phone follows and sent when it changed (TypeScript coalesces
+    `onChange` the same 120 ms). Responses close their connection.
+  - A tool's output on the page: `Session::tool_output` (Windows) keeps it now; the page still sends "".
+  - `:serve 99999` says node's port error; other bind errors are the OS's wording.
+  - Demo agents run on engine "pi" (DemoSession's default), so they show their model.
+  - Hooks into shared files: `App::send` and `App::start_agent` hand demo agents
+    to serve/demo.rs; `tui::run` starts demo mode instead of restoring agents
+    and runs `--serve`; the statusline draws ` DEMO ` and ⇄ through
+    `serve::statusline_right`; `Theme::group` and `Theme::normal_bg` (a
+    transparent theme's background) give the page its palette;
+    `Session::streaming_at` marks a streaming reply.
+- Kill keeps the slot (`Session::closed`): `App::open()` is the list the
+  TypeScript's `sessions` array is; forks name their original by slot (`fork_of`).
+- An agent that finishes goes idle, and unread (◆) when you weren't looking,
+  as in TypeScript; `waiting` is for "needs you" (a refused tool to allow, a pi
+  dialog). A prompt sent while a CLI is still wrapping up (after Claude Code's
+  turn end, before it exits) starts once it exits.
+
+## Pty tests and where they stand
+
+Through the Rust binary, these pass today: all of `standalone`,
+`worktree-background`, `reopen-without-pi` 1, 3 and 4, and the non-binary
+parts of the others. These fail and are the areas' targets:
+
+| Test | Area |
+|---|---|
+| e2e 2: first run ... follows up, and comes back after a restart | Sessions (Restore), Engines |
+| e2e 3: @ in a prompt: pick a file | passes |
+| e2e 5: no agent CLI and no API key: the demo starts | Serve (demo) |
+| fork 5: a split forks once | Sessions/Engines: the split and `fork_session` are in; the Claude parser's `Ev::Message` (fork point) and the agent record are missing |
+| layout 6: sidebar on the right and a statusline of your own | Serve (`--demo`: the parts show only with an agent; Windows has the layout) |
+| permissions-panel 4: two vigents open at once | Engines |
+| pi-live 1: vigent --engine pi | Engines |
+| project-config 12: untrusted .vigent.toml, :trust, vigent trust | Config (done) |
+| reopen-without-pi 1-4 | Sessions (Restore), Engines |
+| user-commands 5: a [commands] shell command from config.toml | passes (Windows) |
+| worktree-background 2: keys while a worktree is made, the prompt waits | Sessions |
+
+## Parity checklist
+
+`[x]` Rust has it · `[~]` partly · `[ ]` not yet. Area in **bold**.
+
+### CLI (`src/cli.ts`)
+
+- [x] `vigent --version` / `-v` / `version` (no stale-build warning: a binary has no clone) — **Config**
+- [x] `vigent --help` / `-h` (src/cli.ts's text word for word, `help.txt`) — **Config**
+- [x] `vigent [folder]` — **Sessions**
+- [x] `--theme <name>` — **Config**
+- [x] `--engine <id>` (every built-in engine and yours; unknown exits 1 as in TypeScript) — **Engines**
+- [x] `--model <id>` (pi's, or the `--engine` CLI's) — **Engines**
+- [x] `--demo` (and the automatic demo when nothing can run agents: no engine chosen, no pi with a key, no Claude Code/Codex/OpenCode or engine of your own on PATH) — **Serve**
+- [x] `--serve [--local]` — **Serve**
+- [x] `vigent theme list` (built-ins marked, installed themes in `~/.config/vigent/themes` too) — **Config**
+- [x] `vigent theme path` — **Config**
+- [x] `vigent theme new <name> [--from <theme>] [--palette] [--transparent|--no-transparent]` — **Config**
+- [x] `vigent theme import [name|file] [--as <name>] [--vim|--nvim] [--light|--dark] [--clean]` — **Config**
+- [x] `vigent worktree list` (`worktrees`, `wt`; backend names, detached worktrees) — **Sessions**
+- [x] `vigent worktree remove|rm <branch> [--force]` (finds by branch, folder, path or agent name; deletes a merged branch) — **Sessions**
+- [x] `vigent worktree prune` — **Sessions**
+- [x] `vigent worktree gc` — **Sessions**
+- [x] `vigent config init` (writes `CONFIG_TEMPLATE`, `config_template.toml`) — **Config**
+- [x] `vigent config check` — **Config**
+- [x] `vigent trust` — **Config**
+- [x] startup: config + project config + keymap warnings on the message line — **Config**
+- [x] startup: reopen agents whose worktrees remain (`reopenableAgents`, riftri views first), engine fallback when pi is gone (picks what `new_agent_engine` says: Codex etc. need Engines' detection) — **Sessions**
+- [x] startup: `theme = "nvim"|"vim"` follows your editor (`follow.rs`) — **Config**
+
+### Ex commands (`App.exec` in `src/app.ts`)
+
+Core / windows and buffers:
+- [x] `:q` `:quit` `:x` `:wq` `:qa` `:qall` `:xa` `:wqa` (E37 when running), `:q!` `:quit!` `:qa!` `:qall!` — core; closing a split first is **Windows** `[x]`
+- [x] `:help` `:h` (every binding from the keymap, yours first, then EX_HELP) — **Windows**
+- [x] `:split` `:sp`, `:vsplit` `:vs` `:vsp` (with an agent: fork, `windows::fork_session`) — **Windows**
+- [x] `:only` `:on`, `:close` `:clo`, `:wincmd` `:winc` — **Windows**
+- [x] `:bnext` `:bn`, `:bprevious` `:bprev` `:bp` `:bNext` `:bN`, `:buffer` `:b <agent>` — **Windows**
+- [x] `:ls` `:buffers` `:files` — **Windows**, `:dash` `:dashboard` (one list: Review's) — **Review**
+- [x] `:noh` `:nohl` `:nohlsearch` — **Windows**
+- [x] `:marks`, `:jumps`, `:his` `:history` — **Windows**
+
+Sessions:
+- [x] `:new <name>`, `:new!`, `--model`, `--engine`/`-e`, `--template`/`-t` — **Sessions**
+- [x] `:kill` `:kill!` `:bdelete` `:bd` — **Sessions**
+- [x] `:queue [prompt]` (the list is a float, not a picker) — **Sessions**
+- [x] `:pause`, `:resume` — **Sessions**
+- [x] `:race <task> [--engines a,b] [--models x,y] [-t tpl]`, `:race`, `:race pick`, `:race! pick` (the race window is Review's: Enter opens a racer; Tab completion is Windows'; `--models` reads `engines::choices`; in `--demo` three scripted agents race) — **Sessions**, window **Review**
+- [~] `:templates` `:template` `:tpl [name]` (no name: a float listing them, not a picker) — **Sessions**
+- [~] `:tree` (and fork from a point): what CLI agents say; the tree itself is pi's (src/tree.ts, with the pi session) — **Sessions** with **Engines**
+- [x] `:worktrees` `:worktree` `:wt`, `:worktree remove[!] <branch>` — **Sessions**
+- [x] `:attach <branch>` — **Sessions**
+
+Engines:
+- [x] `:checkhealth` `:che` `:engines` (re-detects first; TS text; Rust also keeps `:health`) — **Engines** (worktrees part: **Sessions**)
+- [x] `:model` `:mo [model]` (picker of every ready engine's models, `/` search, any name; `codex:gpt-5.5` from another engine) — **Engines**
+- [x] `:engine` `:eng [id]` (picker and direct) — **Engines**
+- [x] `:effort` `:think [level]` (picker and direct; Codex's per-model levels) — **Engines**
+- [x] `:permissions` `:permission` `:perms` `:perm`, `allow <rule>`, `remove <rule>` (`permissions.rs`: saved at once, reloaded first so two vigents don't undo each other) — **Config**
+- [~] `:pi` `:extensions` (the float lists what pi loaded; Enter doesn't start a prompt yet) — **Engines**
+
+Review:
+- [x] `:diff`, `:diff split|vert|vertical|side` (`]c` `[c` jump, `s` switches layout; no Nerd Font file icons yet) — **Review**
+- [x] `:review` `:hunks` (`x` drop hunk, `X` drop file, `u` undo, `j/k ]c [c n N Tab`, `J/K`, `g G`, `q`) — **Review**
+- [x] `:merge [--no-squash]` (before_merge hook; rolls back on conflict; commits what the agent left) — **Review**
+- [x] `:pr` (before_merge hook; gh, else the compare URL) — **Review**
+- [x] `:w` `:write [file]`, `:w!` `:write!` (transcript as Markdown; tool output isn't kept by Rust's Session yet, so tool blocks are empty) — **Review**
+
+Config:
+- [x] `:colorscheme` `:colo` `:theme [name]` (picker with live preview without a name), `:theme save[!] [name]` — **Config**
+- [x] `:hi` `:highlight` `:hi!` `:highlight!` (`Group guifg=… guibg=… gui=…`, `link A B`, `clear`) — **Config**
+- [x] `:set` `:se` (`applySetCommand`: `opt`, `noopt`, `opt!`, `invopt`, `opt=val`, `opt?`, `opt&`; `looks::exec_set`, which reloads the theme for termguicolors / transparent) — **Config**
+- [x] `:settings` `:options` `:prefs` (`settings.rs`; w saves with `config_edit.rs`, comments kept) — **Config**
+- [x] `:let mapleader = "<key>"` — **Config**
+- [x] `:map` `:nmap` `:imap` `:cmap` `:vmap` `:xmap` and `…noremap` — **Windows**
+- [x] `:unmap` `:nunmap` `:iunmap` `:cunmap` `:vunmap` `:xunmap` — **Windows**
+- [x] `:command[!]` `:com[!]`, `:delcommand` `:delc`, user commands (`Name args`) — **Windows**
+- [x] `:!{command}` (in the agent's worktree) — **Windows**
+- [x] `:trust` — **Config**
+
+Serve:
+- [x] `:cost` `:usage` (usage float) — **Review**
+- [x] `:serve [port] [local]`, `:serve stop`, serve info float, ⇄ on the statusline — **Serve**
+
+### Keys (`src/keys.ts` `DEFAULT_KEYS`; every one is bound, handlers below)
+
+Normal mode:
+- [x] `i` `a` `o` mode.insert; `I` mode.insert_start, `A` mode.append_end — core / **Windows**
+- [x] `:` mode.command — core
+- [x] `/` mode.search, `?` mode.search_back, `n` `N`, `<Esc>` search.clear (incsearch, hlsearch, smartcase, wrapscan, E486/E35) — **Windows**
+- [x] `v` `V` mode.visual and all of VISUAL (`j k <C-d> <C-u> <C-f> <C-b> H M L gg G y ib o zz zt zb <Esc> v V`) — **Windows**
+- [x] `j` `k` `<Down>` `<Up>` `<C-e>` `<C-y>` `<C-n>` `<C-p>` `<C-d>` `<C-u>` `<C-f>` `<C-b>` `<PageDown>` `<PageUp>` `gg` `G` — **Windows**
+- [x] `]s` `[s` `gt` `gT`; [x] `<C-^>` session.alternate; [x] `<leader>1`…`<leader>9` — **Sessions**
+- [x] counts (`3gt`, `5j`, `<C-w>` with a count) — **Windows**
+- [x] `za` `zR` `zM` `zr` `zm` folds (tool output from `Ev::ToolResult`, `Session::tool_output`) — **Windows**
+- [x] `{` `}` message.prev/next, `zz` `zt` `zb`, `<C-o>` `<Tab>` jumps, `m{a-z}` `'{a-z}` marks, `<C-g>`, `gv` — **Windows**
+- [x] `yy` yank.reply, `yib` yank.block (OSC 52 clipboard, `src/clipboard.ts`) — **Windows**
+- [x] `dd` session.kill (asks first, with Windows' `ask`) — **Sessions**
+- [x] `<C-c>` session.abort — **Sessions**
+- [x] `<C-h>` `<BS>` `<C-l>` `<C-j>` `<C-k>`, all `<C-w>…` window keys, `<leader>|` `<leader>-` — **Windows**
+- [x] `<leader>e` sidebar.focus and the sidebar's own keys (j k Enter Esc l o d a p w …) — **Windows**
+- [ ] `<leader>n` `:new `, `<leader>q` `:queue ` (open the command line: works), `<leader>d` `:diff`, `<leader>m` `:merge`, `<leader>p` `:pr`, `<leader>D` `:dash`, `<leader>s` `:settings`, `<leader>r` `:review`, `<leader>T` `:templates`, `<leader>M` `:model`, `<leader>R` `:effort`, `<leader>E` `:engine` — each command's area
+- [x] `<leader>t` theme.picker — **Config**; [~] `<leader>u` session.tree (as `:tree`) — **Sessions**
+- [x] `ZZ` `ZQ` app.quit / app.quit_force, `q` app.quit_hint — core
+- [x] start screen keys `i` `n` `T` `t` `s` `m` `e` `E` `c` `?` `q` as TypeScript (Windows); `T` `t` `s` `m` `e` `E` run `:templates`, `theme.picker`, `:settings`, `:model`, `:effort`, `:engine`, which open their pickers once those areas port them
+- [x] which-key hint after `<leader>` (`[ui] whichkey`) — **Windows**
+- [x] showcmd (pending keys on the command line) — **Windows**
+
+Insert and command line:
+- [x] `<Esc>` `<C-c>` mode.normal, `<CR>` edit.submit, `<BS>` `<C-h>` edit.backspace, `<C-w>` edit.delete_word, `<C-u>` edit.clear — core
+- [x] a real cursor (`src/line-edit.ts`): `<Del>` `<Left>` `<Right>` `<Home>` `<End>` `<C-Left>` `<S-Left>` `<C-Right>` `<S-Right>` `<C-b>` `<C-e>` — **Windows**
+- [x] history `<Up>` `<Down>` `<C-p>` `<C-n>` (prefix match), `<C-r>"` paste, `<C-f>` line NORMAL mode (motions, operators, text objects, undo) — **Windows**
+- [x] `<Tab>` `<S-Tab>` completion (commands, agents, themes, wincmd keys, `:race` flags, wildmenu, the rest dim as you type) — **Windows**
+- [x] `@` file picker in a prompt (`src/attach.ts`) — **Windows**
+- [x] bracketed paste — core
+
+### Config (`config.toml`, `.vigent.toml`)
+
+Parsing every section with TypeScript's warnings is done (`config.rs`); `[x]`
+below means it's also *used*.
+- [x] `theme` / `colorscheme` — **Config**
+- [x] `model` (pi's model) — **Engines**
+- [x] `engine` (`auto`, a built-in, or a custom one) — **Engines**
+- [x] `leader` / `mapleader` — **Config**
+- [~] `[ui]` [x] `sidebar`, `sidebar_width`, `sidebar_position`, `number`, `tilde`, `icons`, `whichkey`, `timeoutlen`; [ ] `termguicolors`, `transparent` (the theme is loaded once: Config) — **Windows**; [x] `notify` — **Sessions**
+- [x] `[engines.<id>]` `args`, `model`, `effort` — **Engines**; `allow` `[x]`, `ask` `[x]` (always-allow isn't written to config.toml yet) — **Engines**
+- [x] `[engines.<id>]` with `command`: `name`, `output`, `model_args`, `models`, `resume_args` — **Engines**
+- [x] `[keys]`, `[keys.normal|insert|visual|command]` — **Config**
+- [x] `[highlights]` (tables, `:hi` strings, links) — **Config**
+- [x] `[worktree]` `enabled`, `dir`, `branch`, `base`, `backend` — **Sessions**
+- [x] `[templates.<name>]` `prompt`, `description`, `engine`, `model`, `effort`, `worktree` (+ built-ins fix, test, review, explain) — **Sessions**
+- [x] `[hooks]` `worktree_created` (holds the first prompt), `agent_finished` — **Sessions** (`agents::run_hook`); `before_merge` — **Review** (`review/hooks.rs`)
+- [x] `[statusline]` / `[winbar]` `left`, `right` — **Windows**
+- [x] `[commands]` — **Windows** (parsed by Config)
+- [~] `[style]` [x] `sidebar` (tree, compact, cards), `messages` (plain, labeled; bubbles' agent header), `tool_icons`, `user_label`, `[style.icons]`, `[style.nerd_icons]`; [ ] `separators` (powerline statusline and winbar pill), bubbles' prompt box, a theme's own `[style]` — **Windows**
+- [x] project `.vigent.toml` layered over yours, gated until trusted (`trust.rs`: sha256 in `$XDG_STATE_HOME/vigent/trusted.json`) — **Config**
+- [x] theme files in `~/.config/vigent/themes` (`.toml`, `.json`, `.vim`), `extends`, palettes, `[style]` in themes — **Config**
+
+### Engines
+
+- [x] Claude Code (`claude -p --output-format stream-json`), resume, model, effort, thinking, turn end / Stop hook, denials — **Engines**
+- [x] Codex (`codex exec --json`, resume, fork args) — **Engines**
+- [x] OpenCode — **Engines**
+- [x] Gemini CLI — **Engines**
+- [x] Cursor CLI (`cursor-agent`) — **Engines**
+- [~] pi (`pi --mode rpc`: one per agent, kept running; prompts, events, retries, compaction, extension dialogs via the picker, `:model`/`:effort`, resume from its session file in git's worktree record) (reopened at startup by **Sessions**) — **Engines**; not yet: `:tree` navigation (pi's tree into `tree::flatten`)
+- [x] custom engines from `[engines.<id>]` — **Engines**
+- [x] detection: installed, version, signed in, install hints, the ANTHROPIC_API_KEY rule (`dropEnv`) — **Engines**
+- [x] `defaultEngine` (auto: first signed-in CLI, else pi with a key) — **Engines**
+- [x] model and effort choices (`src/choices.ts`) — **Engines**
+- [~] Claude Code permission denials: what was refused and the rule that allows it `[x]`; `[engines.claude] ask`: allow once / always (kept for the session; writing config.toml waits for Config's line editor) and retry `[x]`; `:permissions` panel and its file `[ ]` — **Engines**
+- [~] fork a conversation (`--fork-session`, `--resume-session-at`): `App::fork_session`, `last_claude_message`, fork runs once then keeps its own id; the split is **Windows**', the Claude `Message` event **Engines**' — **Sessions** with **Engines**
+
+### Sessions, Review, Windows, Serve features beyond commands and keys
+
+- [x] an agent per worktree (riftri, git fallback), made in the background; prompts wait — **Sessions**
+- [x] queue while running, drain after the CLI exits — **Sessions**
+- [x] an agent that finishes while you look elsewhere is unread (◆) until you open it; `waiting` is "needs you", as in TypeScript — **Sessions**
+- [x] agent records saved (made, conversation id, totals and settings at the end of each run) and reopened; usage totals survive a restart — **Sessions**
+- [x] `:kill` marks the record detached; `:attach` reopens — **Sessions**
+- [x] races (`src/race.ts`): racers start when every worktree is made, the race-over message ranks them, the bell for unseen ones — **Sessions**; the race window — **Review**
+- [ ] conversation tree (`src/tree.ts`): pi's, waits for the pi session — **Sessions** with **Engines**
+- [x] riftri storage health in `:checkhealth` (`riftriHealth`) and the `:worktrees` footer — **Sessions**
+- [x] diff view, hunk review, merge, PR, transcript export, dashboard, usage — **Review**
+- [x] splits, sidebar focus, search, VISUAL, folds, marks, jumps, tool output folding, markdown (`src/markdown.ts`, links as OSC 8 printed over the frame), icons (`src/icons.ts`), styles (`src/style.ts`, see `[style]`), pickers (`src/picker.ts` ChoicePicker: `windows::open_picker`; the theme picker with live preview is Config's), confirm prompts (`windows::ask`) — **Windows**
+- [x] alternate screen and focus reporting (`EnableFocusChange`, `App::focus_changed`) — **Windows**, **Sessions**
+- [x] desktop notification / bell when an agent finishes elsewhere, focus reporting, `[ui] notify` (`src/notify.ts`, in agents.rs) — **Sessions**
+- [x] usage float (`:usage`) — **Review**
+- [x] `:serve` web page over std's `TcpListener` (`src/serve.ts`, `src/serve-page.ts`): access code, bearer/`?code=` reads, header-only prompts and stops, constant-time compare, 10 wrong codes lock it, the page in the theme's colors, the agent list over SSE, follow-ups, stop, new agents, LAN addresses — **Serve**
+- [~] demo sessions (`src/demo.ts`, `DemoSession`): the three scripted agents, streaming, prompts answered, `:new` in demo mode; a tool's output isn't shown (Rust's transcript keeps no tool output yet) — **Serve**
