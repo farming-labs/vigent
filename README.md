@@ -91,10 +91,19 @@ before_merge = "npm test"       # :merge and :pr only land a passing branch
 Test = "!npm test"              # :Test runs in the agent's worktree
 ```
 
+Themes, templates, keymaps, engines and setups other people made are one command away. `vigent add` shows the file, and every command it runs, before it asks:
+
+```bash
+vigent add --list                  # what's in the registry
+vigent add harbor                  # a theme; :colorscheme harbor
+vigent add pnpm-monorepo           # a .vigent.toml for this repo, waiting for :trust
+```
+
 ## Docs
 
 - **[Using vigent](docs/guide.md):** engines, worktrees, reviewing, notifications, `:serve`, every key
 - **[Configuration](docs/config.md):** every option, engine setting, hook, command and key
+- **[Registry](docs/registry.md):** `vigent add`, what it checks before it adds anything, and how to share your own entry
 - **[Themes](docs/themes.md):** 28 built-in themes, a [Neovim-style setup](docs/themes.md#a-neovim-style-setup) with Nerd Font icons, layout styles (cards or compact sidebar, labeled or bubble messages, your own icons), importing any vim or Neovim colorscheme
 
 ## From source
