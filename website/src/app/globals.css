@@ -354,3 +354,61 @@ button.sw:hover, button.sw:focus-visible { border-color: var(--faint); color: va
 .toast code { color: var(--bright); font-family: inherit; overflow-wrap: anywhere; }
 @keyframes toast-in { from { transform: translateY(6px); opacity: .4; } }
 @media (prefers-reduced-motion: reduce) { .toast { animation: none; } .yank { transition: none; } }
+
+/* ---- registry: a store of themes, templates, keymaps, engines and setups ---- */
+.rhero { padding-block: 32px 24px; }
+.l.store-line { max-width: calc(120ch + 6.5ch); }
+.store { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.rbar { display: flex; align-items: center; justify-content: space-between; gap: 12px 3ch; flex-wrap: wrap; border-bottom: 1px solid var(--line); padding-bottom: 10px; }
+.rkinds { display: flex; gap: 2px; min-width: 0; max-width: 100%; overflow-x: auto; scrollbar-width: none; }
+.rkinds button {
+  display: inline-flex; align-items: center; gap: 1ch; min-height: 32px; padding: 0 1.4ch;
+  font: inherit; color: var(--dim); background: none; border: 1px solid transparent; border-radius: 3px; cursor: pointer; white-space: nowrap;
+  transition: color 140ms cubic-bezier(0.22, 1, 0.36, 1), border-color 140ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.rkinds button .n { color: var(--faint); font-size: 12px; }
+.rkinds button:hover { color: var(--fg); }
+.rkinds button[aria-pressed="true"] { color: var(--bright); background: var(--on); border-color: var(--line); }
+.rkinds button[aria-pressed="true"] .n { color: var(--dim); }
+.rsearch { display: flex; align-items: center; gap: 1ch; min-width: min(100%, 34ch); border: 1px solid var(--line); border-radius: 3px; padding: 0 1ch; min-height: 32px; }
+.rsearch:focus-within { border-color: var(--cyan); }
+.rsearch input { flex: 1; min-width: 0; width: 100%; font: inherit; color: var(--bright); background: none; border: 0; outline: 0; padding: 0; }
+.rsearch input::placeholder { color: var(--faint); }
+.rwhat { font-size: 13px; }
+.rgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 36ch), 1fr)); gap: 12px; }
+.rcard {
+  display: flex; flex-direction: column; gap: 8px; min-width: 0;
+  padding: 12px 1.5ch; background: var(--bg); border: 1px solid var(--line); border-radius: 4px;
+  transition: border-color 140ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.rcard:hover { border-color: var(--faint); }
+.rhead { display: flex; align-items: baseline; justify-content: space-between; gap: 1ch; }
+.rhead h3 { font-size: 14.5px; overflow-wrap: anywhere; }
+.rkind { color: var(--cyan); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; }
+.rdesc { color: var(--fg); font-size: 13px; line-height: 1.55; }
+.rmeta { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 1ch; font-size: 12px; }
+.badge { border: 1px solid var(--faint); color: var(--dim); border-radius: 3px; padding: 0 .8ch; font-size: 11px; line-height: 1.6; }
+.badge.ok { color: var(--green); border-color: color-mix(in srgb, var(--green) 45%, transparent); }
+.badge.warn { color: var(--yellow); border-color: color-mix(in srgb, var(--yellow) 45%, transparent); }
+.rruns { list-style: none; margin: 0; padding: 2px 0 2px 1.2ch; border-left: 2px solid color-mix(in srgb, var(--yellow) 55%, transparent); font-size: 12px; line-height: 1.6; }
+.rruns li { overflow-wrap: anywhere; }
+.rcard pre.code { font-size: 12px; line-height: 1.55; padding: 6px 1.2ch; border-radius: 3px; }
+.rfile summary { cursor: pointer; color: var(--blue); font-size: 12.5px; width: max-content; }
+.rfile summary:hover { text-decoration: underline; }
+.rfile[open] summary { margin-bottom: 6px; }
+.radd { display: flex; align-items: center; gap: 1ch; margin-top: auto; padding-top: 8px; border-top: 1px dashed var(--line); }
+.radd code { flex: 1; min-width: 0; color: var(--green); font: 13px var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rcopy { min-width: 9ch; min-height: 28px; text-align: center; }
+.rempty { padding: 24px 0; }
+/* the small vigent on a theme card: the same drawing as the home page, in that theme's colors */
+.screen.mini { margin: 0; border-radius: 3px; box-shadow: none; font-size: 11.5px; line-height: 1.6; }
+.screen.mini pre { padding: 6px 0 0 1ch; background: linear-gradient(to right, var(--s-side) 16ch, var(--s-bg) 16ch); overflow: hidden; }
+.screen.mini .st { margin: 6px 0 0 -1ch; gap: 1.5ch; }
+@media (pointer: coarse) {
+  .rkinds button, .rsearch, .rcopy { min-height: 44px; }
+}
+@media (max-width: 640px) {
+  .rbar { flex-direction: column; align-items: stretch; }
+  .rkinds { margin-inline: -2px; }
+}
+@media (prefers-reduced-motion: reduce) { .rkinds button, .rcard { transition: none; } }

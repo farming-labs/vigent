@@ -1,0 +1,6 @@
+[templates.fix-ci]
+description = "fix the failing CI run"
+prompt = """
+Read the latest failing CI run with `gh run view --log-failed`, find the cause, \
+and fix it. Then run the same check locally and make sure it passes before you stop.
+{task}"""

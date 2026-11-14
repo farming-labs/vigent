@@ -1,0 +1,4 @@
+description = "Goose's headless run mode"
+author = "vigent"
+license = "MIT"
+tags = ["text output"]

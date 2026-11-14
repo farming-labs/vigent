@@ -1,0 +1,3 @@
+[engines.goose]
+name = "Goose"
+command = ["goose", "run", "--text", "{prompt}"]

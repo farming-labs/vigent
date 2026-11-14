@@ -1,6 +1,6 @@
 import { VERSION } from "../lib/site";
 
-export type Tab = "home" | "install" | "engines" | "keys" | "themes" | "docs";
+export type Tab = "home" | "install" | "engines" | "keys" | "themes" | "registry" | "docs";
 
 const TABS: { id: Tab; label: string; href: string }[] = [
   { id: "home", label: "vigent.txt", href: "/" },
@@ -8,6 +8,7 @@ const TABS: { id: Tab; label: string; href: string }[] = [
   { id: "engines", label: "engines", href: "/#engines" },
   { id: "keys", label: "keys", href: "/#keys" },
   { id: "themes", label: "themes", href: "/#themes" },
+  { id: "registry", label: "registry", href: "/registry" },
   { id: "docs", label: "docs", href: "/docs" },
 ];
 

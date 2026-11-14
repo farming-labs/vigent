@@ -43,6 +43,8 @@
     "start": "node dist/cli.js",
     "demo": "node dist/cli.js --demo",
     "test": "tsc && node --test test/*.test.mjs",
+    "registry": "npm run build && node scripts/registry.mjs",
+    "registry:check": "npm run build && node scripts/registry.mjs --check",
     "prepack": "npm run clean && npm run build",
     "prepublishOnly": "npm test"
   },

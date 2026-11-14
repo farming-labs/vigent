@@ -1,0 +1,6 @@
+[templates.test-the-diff]
+description = "tests for this branch's changes"
+prompt = """
+Write tests for what changed on this branch (compare it with the branch it started from \
+using git). Each test must fail without the change and pass with it. Don't edit the code \
+under test; if a test finds a bug, say so. {task}"""

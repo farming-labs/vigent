@@ -1,0 +1,5 @@
+# Amp's --stream-json follows Claude Code's format, so vigent shows its tool calls
+[engines.amp]
+name = "Amp"
+command = ["amp", "--execute", "{prompt}", "--stream-json"]
+output = "claude"

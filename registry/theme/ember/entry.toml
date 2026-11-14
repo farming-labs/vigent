@@ -1,0 +1,9 @@
+# gruvbox, with orange prompts and labeled messages
+extends = "gruvbox"
+
+[highlights]
+VigentUser = { fg = "#fe8019", bold = true }
+VigentModeNormal = { fg = "#282828", bg = "#fe8019", bold = true }
+
+[style]
+messages = "labeled"

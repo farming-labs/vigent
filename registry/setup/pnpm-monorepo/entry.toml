@@ -1,0 +1,11 @@
+# a .vigent.toml for a pnpm workspace
+
+[hooks]
+worktree_created = "pnpm install --frozen-lockfile"
+before_merge = "pnpm test"
+
+[commands]
+Test = "!pnpm test {args}"
+
+[engines.claude]
+allow = ["Bash(pnpm test:*)", "Bash(pnpm lint:*)"]

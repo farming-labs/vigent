@@ -1,0 +1,4 @@
+description = "gruvbox with orange prompts and labeled messages"
+author = "vigent"
+license = "MIT"
+tags = ["dark", "layout", "gruvbox"]

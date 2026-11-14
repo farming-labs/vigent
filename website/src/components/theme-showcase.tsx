@@ -6,7 +6,7 @@ import { type ThemeColors, THEMES } from "../lib/themes";
 import { ColorschemeFloat, swatch } from "./colorscheme-float";
 
 /** The drawing's colors as CSS variables, from one of vigent's themes. */
-function vars(t: ThemeColors): CSSProperties {
+export function vars(t: ThemeColors): CSSProperties {
   const v: Record<string, string> = {};
   const set = (name: string, value: string | undefined) => {
     if (value) v[`--s-${name}`] = value;

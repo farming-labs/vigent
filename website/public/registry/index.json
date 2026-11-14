@@ -1,0 +1,247 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "name": "ember",
+      "kind": "theme",
+      "description": "gruvbox with orange prompts and labeled messages",
+      "author": "vigent",
+      "license": "MIT",
+      "tags": [
+        "dark",
+        "layout",
+        "gruvbox"
+      ],
+      "file": "# gruvbox, with orange prompts and labeled messages\nextends = \"gruvbox\"\n\n[highlights]\nVigentUser = { fg = \"#fe8019\", bold = true }\nVigentModeNormal = { fg = \"#282828\", bg = \"#fe8019\", bold = true }\n\n[style]\nmessages = \"labeled\"\n",
+      "runs": [],
+      "colors": {
+        "background": "dark",
+        "transparent": false,
+        "bg": "#282828",
+        "fg": "#ebdbb2",
+        "side": "#1d2021",
+        "sep": "#665c54",
+        "bar": "#bdae93",
+        "barFg": "#282828",
+        "dim": "#928374",
+        "title": "#b8bb26",
+        "str": "#b8bb26",
+        "user": "#fe8019",
+        "tool": "#8ec07c",
+        "link": "#8ec07c",
+        "spin": "#fe8019",
+        "modeBg": "#fe8019",
+        "modeFg": "#282828",
+        "float": "#3c3836",
+        "sel": "#83a598",
+        "selFg": "#282828"
+      }
+    },
+    {
+      "name": "harbor",
+      "kind": "theme",
+      "description": "nord with a card per agent and a brighter mode badge",
+      "author": "vigent",
+      "license": "MIT",
+      "tags": [
+        "dark",
+        "layout",
+        "nord"
+      ],
+      "file": "# nord, with a card per agent and a brighter mode badge\nextends = \"nord\"\n\n[highlights]\nVigentModeNormal = { fg = \"#2e3440\", bg = \"#88c0d0\", bold = true }\nVigentUser = { fg = \"#88c0d0\", bold = true }\n\n[style]\nsidebar = \"cards\"\n",
+      "runs": [],
+      "colors": {
+        "background": "dark",
+        "transparent": false,
+        "bg": "#2e3440",
+        "fg": "#d8dee9",
+        "side": "#272c36",
+        "sep": "#4c566a",
+        "bar": "#3b4252",
+        "barFg": "#d8dee9",
+        "dim": "#616e88",
+        "title": "#81a1c1",
+        "str": "#a3be8c",
+        "user": "#88c0d0",
+        "tool": "#88c0d0",
+        "link": "#81a1c1",
+        "spin": "#d08770",
+        "modeBg": "#88c0d0",
+        "modeFg": "#2e3440",
+        "float": "#272c36",
+        "sel": "#434c5e",
+        "selFg": "#d8dee9"
+      }
+    },
+    {
+      "name": "fix-ci",
+      "kind": "template",
+      "description": "find why CI failed, fix it, and rerun the same check locally",
+      "author": "vigent",
+      "license": "MIT",
+      "tags": [
+        "ci",
+        "gh"
+      ],
+      "file": "[templates.fix-ci]\ndescription = \"fix the failing CI run\"\nprompt = \"\"\"\nRead the latest failing CI run with `gh run view --log-failed`, find the cause, \\\nand fix it. Then run the same check locally and make sure it passes before you stop.\n{task}\"\"\"\n",
+      "runs": []
+    },
+    {
+      "name": "race-review",
+      "kind": "template",
+      "description": "a review to :race on several engines; keep the one you agree with",
+      "author": "vigent",
+      "license": "MIT",
+      "tags": [
+        "review",
+        "race"
+      ],
+      "file": "# race it for several reviews at once:  :race -t race-review\n[templates.race-review]\ndescription = \"review this branch; changes nothing\"\nprompt = \"\"\"\nReview this branch for bugs, missing cases and missing tests: compare it with the branch \\\nit started from using git. List each finding with file:line, most serious first. \\\nDon't change any files. {task}\"\"\"\neffort = \"high\"\n",
+      "runs": []
+    },
+    {
+      "name": "test-the-diff",
+      "kind": "template",
+      "description": "tests for what this branch changed, each one failing without the change",
+      "author": "vigent",
+      "license": "MIT",
+      "tags": [
+        "tests"
+      ],
+      "file": "[templates.test-the-diff]\ndescription = \"tests for this branch's changes\"\nprompt = \"\"\"\nWrite tests for what changed on this branch (compare it with the branch it started from \\\nusing git). Each test must fail without the change and pass with it. Don't edit the code \\\nunder test; if a test finds a bug, say so. {task}\"\"\"\n",
+      "runs": []
+    },
+    {
+      "name": "leader-land",
+      "kind": "keymap",
+      "description": "start, review and land agents from <leader>a",
+      "author": "vigent",
+      "license": "MIT",
+      "tags": [
+        "leader",
+        "which-key"
+      ],
+      "file": "# <leader>a, then one key: an agent's whole life, from starting it to landing it\n[keys.normal]\n\"<leader>an\" = \":new \"\n\"<leader>at\" = \":templates<CR>\"\n\"<leader>ad\" = \":diff<CR>\"\n\"<leader>ar\" = \":review<CR>\"\n\"<leader>am\" = \":merge<CR>\"\n\"<leader>ap\" = \":pr<CR>\"\n\"<leader>ak\" = \":kill<CR>\"\n",
+      "runs": []
+    },
+    {
+      "name": "aider",
+      "kind": "engine",
+      "description": "Aider as an engine, with :model choosing its model",
+      "author": "vigent",
+      "license": "MIT",
+      "tags": [
+        "text output"
+      ],
+      "file": "[engines.aider]\nname = \"Aider\"\ncommand = [\"aider\", \"--yes-always\", \"--no-pretty\", \"--message\", \"{prompt}\"]\nmodel_args = [\"--model\", \"{model}\"]\nmodels = [\"sonnet\", \"gpt-5\"]\n",
+      "runs": [
+        {
+          "from": "engines.aider.command",
+          "command": "aider --yes-always --no-pretty --message {prompt}"
+        },
+        {
+          "from": "engines.aider.model_args",
+          "command": "aider --yes-always --no-pretty --message {prompt} --model {model}"
+        }
+      ]
+    },
+    {
+      "name": "amp",
+      "kind": "engine",
+      "description": "Amp, read through its Claude Code-style JSON stream",
+      "author": "vigent",
+      "license": "MIT",
+      "tags": [
+        "stream-json"
+      ],
+      "file": "# Amp's --stream-json follows Claude Code's format, so vigent shows its tool calls\n[engines.amp]\nname = \"Amp\"\ncommand = [\"amp\", \"--execute\", \"{prompt}\", \"--stream-json\"]\noutput = \"claude\"\n",
+      "runs": [
+        {
+          "from": "engines.amp.command",
+          "command": "amp --execute {prompt} --stream-json"
+        }
+      ]
+    },
+    {
+      "name": "goose",
+      "kind": "engine",
+      "description": "Goose's headless run mode",
+      "author": "vigent",
+      "license": "MIT",
+      "tags": [
+        "text output"
+      ],
+      "file": "[engines.goose]\nname = \"Goose\"\ncommand = [\"goose\", \"run\", \"--text\", \"{prompt}\"]\n",
+      "runs": [
+        {
+          "from": "engines.goose.command",
+          "command": "goose run --text {prompt}"
+        }
+      ]
+    },
+    {
+      "name": "cargo-workspace",
+      "kind": "setup",
+      "description": "fetches crates in new worktrees and runs clippy and tests before merging",
+      "author": "vigent",
+      "license": "MIT",
+      "tags": [
+        "rust",
+        "cargo"
+      ],
+      "file": "# a .vigent.toml for a Cargo workspace\n\n[hooks]\nworktree_created = \"cargo fetch --locked\"\nbefore_merge = \"cargo clippy --all-targets -- -D warnings && cargo test --locked\"\n\n[engines.claude]\nallow = [\"Bash(cargo test:*)\", \"Bash(cargo clippy:*)\"]\n",
+      "runs": [
+        {
+          "from": "engines.claude.allow",
+          "allow": "Bash(cargo test:*)"
+        },
+        {
+          "from": "engines.claude.allow",
+          "allow": "Bash(cargo clippy:*)"
+        },
+        {
+          "from": "hooks.worktree_created",
+          "command": "cargo fetch --locked"
+        },
+        {
+          "from": "hooks.before_merge",
+          "command": "cargo clippy --all-targets -- -D warnings && cargo test --locked"
+        }
+      ]
+    },
+    {
+      "name": "pnpm-monorepo",
+      "kind": "setup",
+      "description": "installs each new worktree, tests before merging, lets Claude Code run pnpm test",
+      "author": "vigent",
+      "license": "MIT",
+      "tags": [
+        "pnpm",
+        "node"
+      ],
+      "file": "# a .vigent.toml for a pnpm workspace\n\n[hooks]\nworktree_created = \"pnpm install --frozen-lockfile\"\nbefore_merge = \"pnpm test\"\n\n[commands]\nTest = \"!pnpm test {args}\"\n\n[engines.claude]\nallow = [\"Bash(pnpm test:*)\", \"Bash(pnpm lint:*)\"]\n",
+      "runs": [
+        {
+          "from": "engines.claude.allow",
+          "allow": "Bash(pnpm test:*)"
+        },
+        {
+          "from": "engines.claude.allow",
+          "allow": "Bash(pnpm lint:*)"
+        },
+        {
+          "from": "hooks.worktree_created",
+          "command": "pnpm install --frozen-lockfile"
+        },
+        {
+          "from": "hooks.before_merge",
+          "command": "pnpm test"
+        },
+        {
+          "from": "commands.Test",
+          "command": "pnpm test {args}"
+        }
+      ]
+    }
+  ]
+}
