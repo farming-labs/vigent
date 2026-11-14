@@ -75,7 +75,7 @@ function Card({ item }: { item: Item }) {
   const add = item.builtin ? `:colorscheme ${item.name}` : `vigent add ${item.name}`;
   const runs = item.runs?.length ? item.runs : undefined;
   return (
-    <article className="rcard" aria-label={`${item.name}, ${item.kind}`}>
+    <article className="rcard" aria-label={`${item.name}, ${item.kind}`} data-line data-copy={add}>
       {item.colors && <Preview item={item} />}
       <header className="rhead">
         <h3 className="b">{item.name}</h3>

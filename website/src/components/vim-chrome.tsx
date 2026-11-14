@@ -26,11 +26,17 @@ const ROUTES: Record<string, string> = {
   h: "/docs",
 };
 
-/** The buffer's lines, in order (not the ~ past the end). */
-const lines = () => Array.from(document.querySelectorAll<HTMLElement>("main.buffer .l:not(.tilde)"));
+/**
+ * What counts as a line: the buffer's numbered lines (not the ~ past the end), and anything marked
+ * data-line, like the registry's cards. A line whose children are lines (.has-lines) isn't one itself.
+ */
+const LINE = "main.buffer .l:not(.tilde):not(.has-lines), main.buffer [data-line]";
+/** The buffer's lines, in order. */
+const lines = () => Array.from(document.querySelectorAll<HTMLElement>(LINE));
 
-/** What `yy` copies from a line: the install command on its line, a code block whole, otherwise the line's text. */
+/** What `yy` copies from a line: what it says it copies (data-copy), the install command on its line, a code block whole, otherwise the line's text. */
 function lineText(el: HTMLElement): string {
+  if (el.dataset.copy) return el.dataset.copy;
   if (el.querySelector("[data-yank], .install")) return INSTALL;
   const pre = el.querySelector("pre");
   if (pre) return (pre.textContent ?? "").replace(/\s+$/, "");
@@ -40,6 +46,7 @@ function lineText(el: HTMLElement): string {
 
 /** What Enter does on a line, if anything (shown when the cursor gets there). */
 function enterHint(el: HTMLElement): string | undefined {
+  if (el.dataset.copy) return `Enter or yy: copy ${el.dataset.copy}`;
   if (el.querySelector("[data-colorscheme]")) return "Enter: pick a colorscheme (j/k preview each one, Enter keeps it, q goes back)";
   if (el.querySelector("[data-yank], .install")) return "Enter or yy: copy the install command";
   const a = el.querySelector("a[href]");
@@ -193,10 +200,11 @@ export function VimChrome({ file }: { file: string }) {
     const was = cursor.current;
     cursor.current = n;
     setLine(n + 1);
-    // say what Enter does on lines where it does something
+    // say what Enter does on lines where it does something, and stop saying it on lines where it doesn't
     if (n !== was && anchor.current === null) {
       const hint = enterHint(all[n]);
       if (hint) setMsg({ text: hint });
+      else setMsg((m) => (m.text.startsWith("Enter") ? { text: "" } : m));
     }
     paintSelection(all);
     if (!scroll) return;
@@ -331,7 +339,7 @@ export function VimChrome({ file }: { file: string }) {
       const scheme = el.closest?.("[data-colorscheme]");
       if (scheme && scheme !== document.documentElement) return colorscheme(scheme.getAttribute("data-colorscheme") ?? undefined);
       if (el.closest?.("a, button, input")) return;
-      const l = el.closest?.("main.buffer .l:not(.tilde)");
+      const l = el.closest?.(LINE);
       if (l) moveTo(lines().indexOf(l as HTMLElement), false);
     };
     addEventListener("hashchange", onHash);
@@ -495,6 +503,10 @@ export function VimChrome({ file }: { file: string }) {
       // Enter acts on the cursor's line: the theme list opens the picker, the install line copies, a link opens
       if (k === "Enter" && !pending) {
         const el = lines()[cursor.current];
+        if (el?.dataset.copy) {
+          e.preventDefault();
+          return yank(el.dataset.copy);
+        }
         if (el?.querySelector("[data-colorscheme]")) {
           e.preventDefault();
           return colorscheme();

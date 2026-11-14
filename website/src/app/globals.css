@@ -412,3 +412,12 @@ button.sw:hover, button.sw:focus-visible { border-color: var(--faint); color: va
   .rkinds { margin-inline: -2px; }
 }
 @media (prefers-reduced-motion: reduce) { .rkinds button, .rcard { transition: none; } }
+/* the vim keys: each card is a line of its own (data-line); the store around them isn't one */
+.l.has-lines::before { counter-increment: none; content: ""; }
+.rcard { counter-increment: ln; scroll-margin-block: calc(var(--tab-h) + 12px) calc(var(--status-h) + 12px); }
+.rcard.cursor { border-color: var(--cyan); background: var(--cursor); }
+.rcard.vsel { background: var(--vsel); }
+.rcard.match .rhead h3 { color: var(--yellow); }
+.rinstall { display: flex; align-items: center; gap: 1.5ch; flex-wrap: wrap; }
+.rinstall code { color: var(--green); font-family: inherit; }
+.rinstall code::before { content: "$ "; color: var(--dim); }
