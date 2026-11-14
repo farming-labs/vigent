@@ -7,23 +7,8 @@ use std::sync::Mutex;
 
 use super::detect::{self, Env};
 
-/// A pick in :model, :effort, :engine (src/choices.ts Choice).
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct Choice {
-    pub value: String,
-    /// what the picker shows (default: the value)
-    pub label: Option<String>,
-    pub note: Option<String>,
-}
-
-impl Choice {
-    pub fn new(value: &str, label: Option<&str>, note: Option<&str>) -> Choice {
-        Choice { value: value.into(), label: label.map(str::to_string), note: note.map(str::to_string) }
-    }
-    pub fn shown(&self) -> &str {
-        self.label.as_deref().unwrap_or(&self.value)
-    }
-}
+/// A pick in :model, :effort, :engine (src/choices.ts Choice): the picker's own.
+pub use crate::ui::picker::Choice;
 
 /// Claude Code's models, newest first: what `--model` takes, and their names (id, label, alias).
 pub const CLAUDE_MODELS: [(&str, &str, &str); 4] = [

@@ -1,8 +1,11 @@
 //! A list to pick from, vim-style (src/picker.ts ChoicePicker): `j`/`k`
 //! (↓/↑, Ctrl-n/p, Tab) move, `g`/`G` jump, Enter picks, `q`/Esc closes.
-//! `/` starts a search: type to filter (fuzzy, like pi-tui's), Esc ends it.
-//! With `custom`, Enter on a search that matches nothing picks the text itself.
-//! The `@` file picker, and every area's pickers (:model, :theme, ...), are these.
+//! `/` starts a search: type to filter (fuzzy, like pi-tui's), Esc ends it
+//! (the filter stays; Esc again drops it, then closes). With `custom`, Enter
+//! on a search that matches nothing picks the text itself (a model the list
+//! doesn't know). Every picker is one of these: the `@` file picker, `:model`,
+//! `:effort`, `:engine`, a refused tool's question, a pi extension's select.
+//! It's open in `App::windows.picker` (`actions::windows::open_picker`).
 
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
@@ -22,8 +25,12 @@ pub struct Choice {
 }
 
 impl Choice {
-    pub fn new(value: impl Into<String>) -> Choice {
-        Choice { value: value.into(), ..Default::default() }
+    pub fn new(value: &str, label: Option<&str>, note: Option<&str>) -> Choice {
+        Choice { value: value.into(), label: label.map(str::to_string), note: note.map(str::to_string), group: None }
+    }
+    /// what the list shows
+    pub fn shown(&self) -> &str {
+        self.label.as_deref().unwrap_or(&self.value)
     }
 }
 
@@ -51,10 +58,13 @@ pub struct Picker {
     pub place: Place,
     pub done: Option<Done>,
     pub back_out: Option<Box<dyn FnOnce(&mut App)>>,
+    /// which picker a list loading in the background is for (`actions::windows::fill_picker`)
+    pub id: u64,
 }
 
 impl Picker {
     pub fn new(title: &str, items: Option<Vec<Choice>>, current: Option<String>, custom: bool, done: Done) -> Picker {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         let mut p = Picker {
             title: title.into(),
             items: None,
@@ -68,6 +78,7 @@ impl Picker {
             place: Place::Center { width: 72 },
             done: Some(done),
             back_out: None,
+            id: NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         };
         if let Some(items) = items {
             p.set_items(items);
@@ -173,7 +184,7 @@ impl Picker {
         }
         lines.push(Line::from(Span::styled(format!("{lt}{}{rt}", h.repeat(inner)), border)));
         let all = Self::rows_of(&items);
-        let name_w = (inner / 3).min(items.iter().map(|x| width(x.label.as_deref().unwrap_or(&x.value))).max().unwrap_or(0));
+        let name_w = (inner / 3).min(items.iter().map(|x| width(x.shown())).max().unwrap_or(0));
         for i in 0..self.rows {
             match all.get(self.scroll + i) {
                 Some(Err(heading)) => {
@@ -188,8 +199,8 @@ impl Picker {
                     let row_bg = if selected { sel } else { on("NormalFloat") };
                     let group = if selected { sel } else { on("NormalFloat") };
                     let marker = if Some(&c.value) == self.current.as_ref() { format!("{cur_mark} ") } else { "  ".into() };
-                    let label = c.label.clone().unwrap_or_else(|| c.value.clone());
-                    let padded = if c.note.is_some() { format!("{label}{}", " ".repeat(name_w.saturating_sub(width(&label)))) } else { label };
+                    let label = c.shown();
+                    let padded = if c.note.is_some() { format!("{label}{}", " ".repeat(name_w.saturating_sub(width(label)))) } else { label.to_string() };
                     let name = fit(&format!("{marker}{padded}"), 10usize.max(inner.saturating_sub(4)));
                     let note = c.note.as_ref().map(|n| fit(&format!("  {n}"), inner.saturating_sub(2 + width(&name)))).unwrap_or_default();
                     let used = 1 + width(&name) + width(&note);
@@ -320,7 +331,7 @@ pub fn fuzzy_match(query: &str, text: &str) -> Option<f64> {
                 break;
             }
             if c == q[qi] {
-                let boundary = i == 0 || matches!(t[i - 1], ' ' | '\t' | '-' | '_' | '.' | '/' | ':');
+                let boundary = i == 0 || t[i - 1].is_whitespace() || matches!(t[i - 1], '-' | '_' | '.' | '/' | ':');
                 if last == i as isize - 1 {
                     consecutive += 1.0;
                     score -= consecutive * 5.0;
@@ -398,7 +409,7 @@ mod tests {
     use super::*;
 
     fn picker(items: &[&str]) -> Picker {
-        Picker::new("Attach a file · shop", Some(items.iter().map(|s| Choice::new(*s)).collect()), None, false, Box::new(|_, _| {}))
+        Picker::new("Attach a file · shop", Some(items.iter().map(|s| Choice::new(s, None, None)).collect()), None, false, Box::new(|_, _| {}))
     }
 
     #[test]
@@ -419,6 +430,63 @@ mod tests {
         feed(&mut p, "j");
         assert_eq!(p.index, 0);
         assert!(matches!(feed(&mut p, "q"), Outcome::Done(None)));
+    }
+
+    /// Keys as a terminal types them: Enter, Esc, else the character.
+    fn press(p: &mut Picker, keys: &str) -> Option<Option<String>> {
+        let mut last = None;
+        for c in keys.chars() {
+            let token = match c {
+                '\r' => "<CR>".to_string(),
+                '\x1b' => "<Esc>".to_string(),
+                c => c.to_string(),
+            };
+            last = match feed(p, &token) {
+                Outcome::Done(v) => Some(v),
+                _ => None,
+            };
+        }
+        last
+    }
+
+    fn plain(p: &Picker) -> String {
+        let t = crate::theme::load("default").unwrap();
+        p.lines(70, &t, "unicode").iter().map(|l| l.spans.iter().map(|s| s.content.to_string()).collect::<String>()).collect::<Vec<_>>().join("\n")
+    }
+
+    #[test]
+    fn letters_move_until_slash_searches() {
+        let mut p = Picker::new("Model · 'racer'", Some(crate::engines::choices::claude_models()), Some("default".into()), true, Box::new(|_, _| {}));
+        let s = plain(&p);
+        assert!(s.contains("Model · 'racer' "));
+        assert!(s.contains("● Default"));
+        assert!(s.contains("Claude Opus 5.5    claude-opus-5-5") || s.contains("Claude Opus 5.5   claude-opus-5-5"), "{s}");
+        press(&mut p, "opu");
+        assert!(plain(&p).contains("j/k move"));
+        press(&mut p, "jj");
+        assert!(plain(&p).contains(" 3/5 "));
+        press(&mut p, "k");
+        assert!(plain(&p).contains(" 2/5 "));
+        press(&mut p, "/opu");
+        assert!(plain(&p).contains("type to filter · Esc done"));
+        assert_eq!(press(&mut p, "\r"), Some(Some("claude-opus-5-5".into())));
+    }
+
+    #[test]
+    fn esc_ends_the_search_then_drops_the_filter_then_closes() {
+        let mut p = Picker::new("Model", Some(crate::engines::choices::claude_models()), Some("default".into()), false, Box::new(|_, _| {}));
+        press(&mut p, "/hai");
+        assert!(plain(&p).contains("haiku") && !plain(&p).contains("opus"));
+        assert_eq!(press(&mut p, "\x1b"), None);
+        assert!(plain(&p).contains("/hai") && plain(&p).contains("j/k move"));
+        press(&mut p, "\x1b");
+        assert!(plain(&p).contains("opus"));
+        assert_eq!(press(&mut p, "q"), Some(None));
+        let mut c = Picker::new("Model", Some(vec![]), Some(String::new()), true, Box::new(|_, _| {}));
+        assert!(plain(&c).contains("/ to search or type any name"));
+        press(&mut c, "/my-own-model");
+        assert!(plain(&c).contains("Enter uses 'my-own-model'"));
+        assert_eq!(press(&mut c, "\r"), Some(Some("my-own-model".into())));
     }
 
     #[test]

@@ -110,20 +110,19 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     }
     let lines: Vec<_> = rows.into_iter().map(to_line).collect();
     f.render_widget(Paragraph::new(lines), area);
-    // a picker (the @ file picker, every area's choices)
+    floats::draw(f, app, area, area.height.saturating_sub(2));
+    // the Review area's windows (:diff, :review, :dash, :cost, the race list)
+    crate::review::draw(f, app, area);
+    // the Config area's :settings and :permissions panels
+    crate::settings::draw_any(f, app, area);
+    // a picker (the @ file picker, :model, :effort, :engine, ...), over everything
     if let Some(p) = &app.windows.picker {
-        let (w, r) = picker_rect(app, p, area);
+        let (w, r) = picker_rect(p, area);
         let plines = p.lines(w as usize, &app.theme, &app.config.ui.icons);
         f.render_widget(Clear, r);
         f.render_widget(Paragraph::new(plines), r);
         links.retain(|(y, ..)| *y < r.y || *y >= r.y + r.height);
     }
-    floats::draw(f, app, area, area.height.saturating_sub(2));
-    // the Review area's windows (:diff, :review, :dash, :cost, the race list) and the Engines area's :model/:effort/:engine list
-    crate::review::draw(f, app, area);
-    crate::engines::picker::draw(f, app, area);
-    // the Config area's :settings and :permissions panels
-    crate::settings::draw_any(f, app, area);
     if app.float.is_some() {
         links.clear();
     }
@@ -131,11 +130,11 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 }
 
 /// Where a picker goes.
-fn picker_rect(app: &App, p: &picker::Picker, area: Rect) -> (u16, Rect) {
+fn picker_rect(p: &picker::Picker, area: Rect) -> (u16, Rect) {
     let h = (p.height() as u16).min(area.height);
     match p.place {
         picker::Place::Center { width } => {
-            let w = width.min(area.width.saturating_sub(4)).max(22);
+            let w = width.min(area.width.saturating_sub(4)).max(20);
             (w, Rect::new(area.width.saturating_sub(w) / 2, area.height.saturating_sub(h) / 2, w.min(area.width), h))
         }
         picker::Place::BottomLeft { col, offset_y, width } => {
@@ -143,7 +142,6 @@ fn picker_rect(app: &App, p: &picker::Picker, area: Rect) -> (u16, Rect) {
             let bottom = (area.height as i32 + offset_y as i32).max(h as i32);
             let y = (bottom - h as i32).max(0) as u16;
             let x = col.min(area.width.saturating_sub(w));
-            let _ = app;
             (w, Rect::new(x, y, w, h))
         }
     }

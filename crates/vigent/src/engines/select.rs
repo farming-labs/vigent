@@ -4,7 +4,8 @@
 //! openEffortPicker, noEngineReady; and cli.ts newSession's model rules).
 
 use super::choices::{self, Choice, model_label};
-use super::picker::{self, Picker};
+use crate::actions::windows::{fill_picker, open_picker};
+use crate::ui::picker::Picker;
 use super::{Launch, all_ids, default_engine, engine_name, intern, is_engine_id};
 use crate::app::{App, Msg};
 use crate::session::Session;
@@ -162,7 +163,7 @@ pub fn all_model_choices(engine: &str, ready: &[String], env: &super::Env) -> Ve
             }
             let value = if k == 0 { c.value.clone() } else { format!("{e}:{}", c.value) };
             let note = (c.value != "default").then(|| c.value.clone());
-            out.push(Choice { value, label: c.label.clone(), note });
+            out.push(Choice { value, label: c.label.clone(), note, group: None });
         }
     }
     out
@@ -183,21 +184,22 @@ pub fn open_model_picker(app: &mut App) {
         None => "Model · new agents".into(),
     };
     let (engine, ready, env) = (t.engine.clone(), app.engines.infos.iter().filter(|e| e.connected).map(|e| e.id.clone()).collect::<Vec<_>>(), app.engines.env.clone());
-    let p = Picker::new(&title, None, &current, true, Some(12), Box::new(move |app, v| {
+    let mut p = Picker::new(&title, None, Some(current), true, Box::new(move |app, v| {
         if let Some(v) = v {
             choose_model(app, &v, &t);
         }
     }));
+    p.rows = 12;
     load_into(app, p, move || all_model_choices(&engine, &ready, &env));
 }
 
 /// Open `p` and fill it from `load`, run on a thread.
 fn load_into(app: &mut App, p: Picker, load: impl FnOnce() -> Vec<Choice> + Send + 'static) {
     let (id, tx) = (p.id, app.tx.clone());
-    picker::open(app, p);
+    open_picker(app, p);
     std::thread::spawn(move || {
         let list = load();
-        let _ = tx.send(Msg::Run(Box::new(move |app| picker::fill(app, id, list))));
+        let _ = tx.send(Msg::Run(Box::new(move |app| fill_picker(app, id, list))));
     });
 }
 
@@ -247,7 +249,7 @@ pub fn open_effort_picker(app: &mut App) {
     let current = current.unwrap_or_else(|| "default".into());
     let (engine, env) = (t.engine.clone(), app.engines.env.clone());
     let title = format!("Effort · {}", t.label);
-    let p = Picker::new(&title, None, &current, false, None, Box::new(move |app, v| {
+    let p = Picker::new(&title, None, Some(current), false, Box::new(move |app, v| {
         if let Some(v) = v {
             choose_effort(app, &v, &t);
         }
@@ -278,12 +280,12 @@ pub fn open_engine_picker(app: &mut App) {
     let mut items = vec![Choice::new("auto", None, Some(&engine_note(app, "auto")))];
     items.extend(all_ids().into_iter().map(|id| Choice::new(id, None, Some(&engine_note(app, id)))));
     let current = app.engines.preferred.to_string();
-    let p = Picker::new("Engine for new agents", Some(items), &current, false, None, Box::new(|app, v| {
+    let p = Picker::new("Engine for new agents", Some(items), Some(current), false, Box::new(|app, v| {
         if let Some(v) = v {
             choose_engine(app, &v);
         }
     }));
-    picker::open(app, p);
+    open_picker(app, p);
 }
 
 /// `:engine <name>`: new agents run on it. Agents already open keep theirs (their conversation lives there).
@@ -320,7 +322,7 @@ pub fn ask_to_allow(app: &mut App, i: usize) {
         Choice::new("no", None, Some("leave it blocked")),
     ];
     let title = format!("'{}' was blocked · {}", app.sessions[i].name, ask.what);
-    let p = Picker::new(&title, Some(items), "", false, Some(3), Box::new(move |app, v| {
+    let mut p = Picker::new(&title, Some(items), None, false, Box::new(move |app, v| {
         let s = &mut app.sessions[i];
         // aborted, or a new prompt was sent meanwhile
         if s.ask.take().is_none() || s.state != crate::session::State::Waiting {
@@ -366,7 +368,8 @@ pub fn ask_to_allow(app: &mut App, i: usize) {
             s.items.remove(j);
         }
     }));
-    picker::open(app, p);
+    p.rows = 3;
+    open_picker(app, p);
 }
 
 /// Model and effort for new agents at startup: [engines.<id>] model/effort, `model` (pi's), and --model
@@ -496,13 +499,13 @@ mod tests {
         a.sessions.push(s);
         a.focus = 0;
         ask_to_allow(&mut a, 0);
-        let p = a.engines.picker.as_ref().unwrap();
+        let p = a.windows.picker.as_ref().unwrap();
         assert_eq!(p.title, "'pr' was blocked · gh pr view 12");
-        let rows: String = p.render(100, "unicode").iter().flat_map(|r| r.iter().map(|(s, _)| s.clone())).collect();
+        let rows: String = p.lines(100, &a.theme, "unicode").iter().flat_map(|l| l.spans.iter().map(|s| s.content.to_string())).collect();
         assert!(rows.contains("allow once") && rows.contains("always allow") && rows.contains("saved to [engines.claude] allow"));
         // no: left blocked
         a.sessions[0].state = crate::session::State::Waiting;
-        crate::engines::picker::key(&mut a, crossterm::event::KeyEvent::new(crossterm::event::KeyCode::Char('q'), crossterm::event::KeyModifiers::NONE));
+        a.key(crossterm::event::KeyEvent::new(crossterm::event::KeyCode::Char('q'), crossterm::event::KeyModifiers::NONE));
         assert_eq!(a.sessions[0].items.last(), Some(&crate::session::Item::Info("left blocked".into())));
     }
 

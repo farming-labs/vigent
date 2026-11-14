@@ -157,6 +157,10 @@ impl App {
     // -----------------------------------------------------------------
 
     pub fn key(&mut self, k: KeyEvent) {
+        // a picker (the @ file picker, :model, :effort, :engine, ...) is on top of everything
+        if crate::actions::windows::picker_event(self, &k) {
+            return;
+        }
         // the Config area's :settings and :permissions panels and its pickers (themes, templates)
         if crate::settings::is_open(self) {
             crate::settings::key_any(self, k);
@@ -166,11 +170,7 @@ impl App {
         if crate::review::key(self, &k) {
             return;
         }
-        // the Engines area's :model / :effort / :engine list
-        if self.engines.picker.is_some() {
-            return engines::picker::key(self, k);
-        }
-        // the Windows area reads every key first: pickers, questions, the start screen, the sidebar, counts, marks
+        // the Windows area reads every key first: questions, the start screen, the sidebar, counts, marks
         if crate::actions::windows::key(self, &k) {
             return;
         }
