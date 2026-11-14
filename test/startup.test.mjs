@@ -66,7 +66,7 @@ test("pi-tui is vendored (only what vigent draws) and nothing loads an agent at 
 });
 
 test("the vigent command turns on Node's compile cache before loading anything else", () => {
-	assert.equal(pkg.bin.vigent, "./dist/main.js");
+	assert.equal(pkg.bin.vigent, "dist/main.js");
 	const main = fs.readFileSync(path.join(root, "dist", "main.js"), "utf8");
 	assert.match(main, /^#!\/usr\/bin\/env node/);
 	assert.ok(main.indexOf("enableCompileCache") < main.indexOf('import("./cli.js")'));

@@ -27,7 +27,7 @@
   "author": "KinfeMichael Tariku",
   "type": "module",
   "bin": {
-    "vigent": "./dist/main.js"
+    "vigent": "dist/main.js"
   },
   "files": [
     "dist",
