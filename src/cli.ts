@@ -67,6 +67,13 @@ themes:
   vigent config init                         write a commented config.toml
   vigent config check                        validate config.toml (theme, options, keys)
 
+registry (themes, templates, keymaps, engines and setups people share):
+  vigent add <name>                          show an entry's file and what it runs, then add it
+  vigent add <kind>/<name>                   when two kinds share a name (theme, template, keymap, engine, setup)
+      --yes               don't ask           --force   replace what's there
+  vigent add --list [kind]                   every entry
+  vigent search <words>                      entries with these words
+
 keys (NORMAL mode):
   i            prompt the focused agent        :new <task>     agent in its own worktree
   j/k gg G     scroll transcript               :kill[!]        stop it (! removes worktree)
@@ -219,6 +226,8 @@ async function main(): Promise<number | undefined> {
 		return 0;
 	}
 	if (argv[0] === "theme" || argv[0] === "themes") return themeCommand(argv.slice(1));
+	if (argv[0] === "add") return (await import("./registry.js")).addCommand(argv.slice(1));
+	if (argv[0] === "search") return (await import("./registry.js")).searchCommand(argv.slice(1));
 	if (argv[0] === "worktree" || argv[0] === "worktrees" || argv[0] === "wt") return worktreeCommand(argv.slice(1));
 	if (argv[0] === "config" && argv[1] === "check") {
 		const file = configPath();
