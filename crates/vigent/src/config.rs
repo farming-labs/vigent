@@ -11,8 +11,9 @@
 //!
 //! A project's .vigent.toml layers over yours (`LoadOptions::base`); until it's
 //! trusted, what runs programs (hooks, engine args and commands, Claude Code
-//! permission rules, shell commands, mappings that can run a shell command or
-//! define commands or mappings) is left out and named in `gated`.
+//! permission rules, commands and mappings that can run a shell command,
+//! define commands or mappings, write a file they name or start :serve) is
+//! left out and named in `gated`.
 //!
 //! EXTENSION POINT (Config area): a new top-level key is a match arm in
 //! [`load_str`]; a new [ui] option is a line in [`UI_ALIASES`] and an arm in
@@ -225,8 +226,10 @@ pub struct StyleSpec {
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct CommandInfo {
     pub description: Option<String>,
-    /// a project's command with shell steps, before :trust (it isn't in `commands` yet)
+    /// a project's command with shell steps, or ex steps that can run them, before :trust (it isn't in `commands` yet)
     pub waits_for_trust: bool,
+    /// it waits for an ex step (`nnoremap j :!x<CR>`, `permissions allow ...`), not a shell step
+    pub ex_only: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]
@@ -380,7 +383,16 @@ pub fn load_str(text: &str, file_name: &str, opts: LoadOptions) -> Loaded {
             "engines" => parse_engines(value, w, may_run, &mut config, &mut warnings, &mut gated),
             "templates" => parse_templates(value, &mut config, &mut warnings),
             "style" => parse_style(value, w, &mut config.style, &mut warnings),
-            "commands" => parse_commands(value, w, may_run, &mut config.commands, &mut config.command_info, &mut warnings, &mut gated),
+            "commands" => {
+                // from an untrusted file, a command waits for :trust if a step runs a shell command, or
+                // can run one: defines commands or mappings, replays keys, trusts, writes a file it
+                // names, opens :serve, or calls a command (the file's or yours) that does
+                let own = command_steps(Some(value));
+                let mine = config.commands.clone();
+                let steps = |n: &str| -> Vec<Vec<String>> { own.iter().chain(mine.iter()).filter(|(c, _)| c == n).map(|(_, s)| s.clone()).collect() };
+                let waits = |s: &[String]| s.iter().map(|x| crate::commands::windows::normalize_step(x)).any(|x| x.starts_with('!') || crate::keys::command_line_risk(&x, &steps, 0).is_some());
+                parse_commands(value, w, may_run, &waits, &mut config.commands, &mut config.command_info, &mut warnings, &mut gated)
+            }
             "statusline" => parse_sections("statusline", value, &STATUSLINE_PARTS, &mut config.layout.statusline, w, &mut warnings),
             "winbar" => parse_sections("winbar", value, &WINBAR_PARTS, &mut config.layout.winbar, w, &mut warnings),
             "hooks" => {
@@ -452,7 +464,8 @@ pub fn load_str(text: &str, file_name: &str, opts: LoadOptions) -> Loaded {
         }
     }
     // last, once the leader and [commands] are read: a project's mapping that can run a shell
-    // command, or define commands or mappings, waits for :trust like the rest
+    // command, define commands or mappings, write a file it names or start :serve waits for
+    // :trust like the rest
     let steps = if may_run { vec![] } else { command_steps(raw.iter().find(|(k, _)| k == "commands").map(|(_, v)| v)) };
     let leader = crate::keys::leader_or_default(config.leader.as_deref());
     for (mode, lhs, r) in keys {
@@ -667,7 +680,10 @@ pub fn parse_style(value: &Val, w: &str, style: &mut StyleSpec, warnings: &mut V
     }
 }
 
-fn parse_commands(value: &Val, w: &str, may_run: bool, out: &mut Vec<(String, Vec<String>)>, info: &mut Vec<(String, CommandInfo)>, warnings: &mut Vec<String>, gated: &mut Vec<String>) {
+/// Parse [commands]. Mistakes are warnings; from an untrusted file, a command that `waits` (one
+/// with a shell step, or a step that can run one) is gated.
+#[allow(clippy::too_many_arguments)]
+fn parse_commands(value: &Val, w: &str, may_run: bool, waits: &dyn Fn(&[String]) -> bool, out: &mut Vec<(String, Vec<String>)>, info: &mut Vec<(String, CommandInfo)>, warnings: &mut Vec<String>, gated: &mut Vec<String>) {
     let Some(t) = value.as_table() else {
         warnings.push(format!("{w}: [commands] should be a table, e.g. Test = \"!npm test\""));
         return;
@@ -706,17 +722,18 @@ fn parse_commands(value: &Val, w: &str, may_run: bool, out: &mut Vec<(String, Ve
             warnings.push(format!("{w} [commands]: '{name}' should be an ex command (\"new -t review {{args}}\"), a shell command (\"!npm test\") or a list of them"));
             continue;
         };
-        if !may_run && steps.iter().any(|s| normalize(s).starts_with('!')) {
+        if !may_run && waits(&steps) {
             gated.push(format!("commands.{name}"));
             // it completes, and says why it doesn't run yet (unless one of yours by that name runs instead)
             if !out.iter().any(|(n, _)| n == name) {
-                upsert(info, name, CommandInfo { description, waits_for_trust: true });
+                let ex_only = !steps.iter().any(|s| normalize(s).starts_with('!'));
+                upsert(info, name, CommandInfo { description, waits_for_trust: true, ex_only });
             }
             continue;
         }
         upsert(out, name, steps.iter().map(|s| normalize(s)).collect());
         match description {
-            Some(d) => upsert(info, name, CommandInfo { description: Some(d), waits_for_trust: false }),
+            Some(d) => upsert(info, name, CommandInfo { description: Some(d), waits_for_trust: false, ex_only: false }),
             None => info.retain(|(n, _)| n != name),
         }
     }
@@ -1020,7 +1037,7 @@ run = "new"
         let names: Vec<&str> = c.commands.iter().map(|(n, _)| n.as_str()).collect();
         assert_eq!(names, ["Test", "Review", "Land", "Odd"]);
         assert_eq!(c.commands[2].1, ["!npm test", "pr"]);
-        assert_eq!(c.command_info, [("Review".to_string(), CommandInfo { description: Some("review the branch with the review template".into()), waits_for_trust: false })]);
+        assert_eq!(c.command_info, [("Review".to_string(), CommandInfo { description: Some("review the branch with the review template".into()), waits_for_trust: false, ex_only: false })]);
         assert_eq!(
             l.warnings,
             [
@@ -1039,12 +1056,12 @@ run = "new"
         assert!(!r.config.commands.iter().any(|(n, _)| n == "Deploy"));
         assert_eq!(r.config.commands[0].1, ["!npm test"], "yours still runs");
         let info = |c: &Config, n: &str| c.command_info.iter().find(|(k, _)| k == n).map(|(_, i)| i.clone());
-        assert_eq!(info(&r.config, "Deploy"), Some(CommandInfo { description: Some("ship it".into()), waits_for_trust: true }));
+        assert_eq!(info(&r.config, "Deploy"), Some(CommandInfo { description: Some("ship it".into()), waits_for_trust: true, ex_only: false }));
         assert_eq!(info(&r.config, "Test"), None, "yours is the one :Test runs, so it doesn't wait");
-        assert_eq!(info(&r.config, "Look"), Some(CommandInfo { description: Some("the diff".into()), waits_for_trust: false }));
+        assert_eq!(info(&r.config, "Look"), Some(CommandInfo { description: Some("the diff".into()), waits_for_trust: false, ex_only: false }));
         let t = load_str(project, PROJECT_CONFIG, LoadOptions { base: Some(r.config), trusted: true, label: PROJECT_CONFIG });
         assert!(t.config.commands.iter().any(|(n, s)| n == "Deploy" && s == &["!./deploy.sh"]));
-        assert_eq!(info(&t.config, "Deploy"), Some(CommandInfo { description: Some("ship it".into()), waits_for_trust: false }));
+        assert_eq!(info(&t.config, "Deploy"), Some(CommandInfo { description: Some("ship it".into()), waits_for_trust: false, ex_only: false }));
     }
 
     #[test]
@@ -1088,6 +1105,46 @@ Q = [":", "command X !y", "<CR>"]
         let own = load("[keys.normal]\nj = \":!touch mine<CR>\"\nQ = \":nnoremap x :!y<CR>\"\n");
         assert!(own.gated.is_empty());
         assert_eq!(own.config.keys.len(), 2);
+    }
+
+    #[test]
+    fn a_projects_commands_with_risky_ex_steps_wait_for_trust() {
+        let mine = load("[commands]\nTest = \"!npm test\"\n").config;
+        let project = r#"
+[commands]
+X = "nnoremap j :!touch pwned<CR>"
+Y = ["colorscheme nord", "command Z !z"]
+N = "normal ihi"
+E = "execute 'x'"
+S = "source evil.vim"
+T = "trust"
+P = "permissions allow Bash(*)"
+W = "w! ~/.bashrc"
+V = "serve local"
+C = "Test"
+D = "X"
+Look = "diff"
+Keep = ["colorscheme nord", "w", "serve stop", "permissions"]
+[commands.Save]
+run = "write {args}"
+description = "the transcript, to a file"
+"#;
+        let untrusted = load_str(project, PROJECT_CONFIG, LoadOptions { base: Some(mine.clone()), trusted: false, label: PROJECT_CONFIG });
+        let want: Vec<String> = ["X", "Y", "N", "E", "S", "T", "P", "W", "V", "C", "D", "Save"].iter().map(|n| format!("commands.{n}")).collect();
+        assert_eq!(untrusted.gated, want);
+        let mut names: Vec<&str> = untrusted.config.commands.iter().map(|(n, _)| n.as_str()).collect();
+        names.sort();
+        assert_eq!(names, ["Keep", "Look", "Test"], "ex-only commands apply, and yours");
+        let info = |c: &Config, n: &str| c.command_info.iter().find(|(x, _)| x == n).map(|(_, i)| i.clone());
+        assert_eq!(info(&untrusted.config, "X"), Some(CommandInfo { description: None, waits_for_trust: true, ex_only: true }), "it completes and says it waits");
+        assert_eq!(info(&untrusted.config, "Save"), Some(CommandInfo { description: Some("the transcript, to a file".into()), waits_for_trust: true, ex_only: true }));
+        assert!(untrusted.warnings.is_empty(), "{:?}", untrusted.warnings);
+        let trusted = load_str(project, PROJECT_CONFIG, LoadOptions { base: Some(mine), trusted: true, label: PROJECT_CONFIG });
+        assert!(trusted.gated.is_empty());
+        assert!(trusted.config.commands.iter().any(|(n, s)| n == "X" && s == &["nnoremap j :!touch pwned<CR>"]));
+        assert_eq!(info(&trusted.config, "Save"), Some(CommandInfo { description: Some("the transcript, to a file".into()), waits_for_trust: false, ex_only: false }));
+        // your own config.toml defines what it likes
+        assert!(load("[commands]\nX = \"nnoremap j :!touch mine<CR>\"\nV = \"serve\"\n").gated.is_empty());
     }
 
     #[test]
