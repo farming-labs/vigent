@@ -567,6 +567,8 @@ export interface CliSessionOptions {
 	ask?: boolean | (() => boolean | undefined);
 	/** "always allow" was picked: keep these rules ([engines.claude] allow) */
 	onAlwaysAllow?: (rules: string[]) => void;
+	/** why the CLI can't run here now (the repository isn't trusted yet), asked before each run */
+	blocked?: () => string | undefined;
 }
 
 /** What you pick when an agent was refused a tool: allow it for one retry, for good, or not. */
@@ -663,6 +665,11 @@ export class CliSession extends Session {
 
 	/** Fork the conversation now, before anything else is said in it (see CliAdapter.forkArgs). */
 	private forkNow(): Promise<void> {
+		const blocked = this.opts.blocked?.();
+		if (blocked) {
+			this.forkError = blocked;
+			return Promise.resolve();
+		}
 		const args = this.adapter.forkArgs!({
 			cwd: this.cwd,
 			resumeId: this.resumeId,
@@ -734,6 +741,12 @@ export class CliSession extends Session {
 		if (this.forkError) {
 			// never fall back to forking now: the original may have moved on since the split
 			this.fail(`${this.forkError}. Close this window (:q) and split again.`);
+			return;
+		}
+		// the CLI loads the repository's own settings: not before you trust it
+		const blocked = this.opts.blocked?.();
+		if (blocked) {
+			this.fail(blocked);
 			return;
 		}
 		this.setState("running");

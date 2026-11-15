@@ -21,6 +21,7 @@ import * as path from "node:path";
 import { after, test } from "node:test";
 import { formula, parseSums } from "../scripts/homebrew-formula.mjs";
 import { Tty } from "./support/terminal.mjs";
+import { trustRepo } from "./support/trust.mjs";
 
 const binary = process.env.VIGENT_BINARY ? path.resolve(process.env.VIGENT_BINARY) : undefined;
 const windows = process.platform === "win32";
@@ -73,6 +74,8 @@ cat '${fixture}'
 	fs.writeFileSync(path.join(repo, "README.md"), "# shop\n");
 	git(["add", "-A"]);
 	git(["commit", "-qm", "init"]);
+	// vigent starts agent CLIs only in a repository you've trusted
+	trustRepo(repo, env);
 }
 
 test("the binary knows its version and runs its commands", { skip }, () => {

@@ -8,6 +8,12 @@
 //! direnv's `allow`: `:trust` in vigent, or `vigent trust` in the project.
 //! Trust is for the file as it is now (its sha256, in
 //! $XDG_STATE_HOME/vigent/trusted.json); if it changes, vigent asks again.
+//!
+//! The same `:trust` trusts the repository itself (its absolute path, in the
+//! same store), which lets agent CLIs run there (src/workspace.ts): vigent runs
+//! each agent CLI headless, and headless CLIs skip their own "trust this
+//! folder?" question while they load the repository's .claude/, .pi/ and the
+//! like. That lasts until `vigent trust --revoke`.
 
 use std::path::{Path, PathBuf};
 
@@ -86,16 +92,165 @@ pub fn is_trusted(file: &Path, content: &str) -> bool {
     read().get(&key(file)).and_then(|v| v.as_str()) == Some(sha256_hex(content.as_bytes()).as_str())
 }
 
-/// Trust this file as it is now.
-pub fn trust_file(file: &Path, content: &str) -> std::io::Result<()> {
-    let mut all = read();
-    all.insert(key(file), serde_json::Value::String(sha256_hex(content.as_bytes())));
+fn write(all: serde_json::Map<String, serde_json::Value>) -> std::io::Result<()> {
     let f = state_file();
     if let Some(dir) = f.parent() {
         std::fs::create_dir_all(dir)?;
     }
     let text = serde_json::to_string_pretty(&serde_json::Value::Object(all)).unwrap_or_default();
     std::fs::write(f, format!("{text}\n"))
+}
+
+/// Trust this file as it is now.
+pub fn trust_file(file: &Path, content: &str) -> std::io::Result<()> {
+    let mut all = read();
+    all.insert(key(file), serde_json::Value::String(sha256_hex(content.as_bytes())));
+    write(all)
+}
+
+// ---------------------------------------------------------------------
+// the repository (src/workspace.ts, and the repository half of src/trust.ts)
+// ---------------------------------------------------------------------
+
+/// A trusted repository's entry in the store (a file's is its sha256).
+const REPOSITORY: &str = "repository";
+
+/// What a reopened agent waits for, shown in the sidebar instead of "paused".
+pub const TRUST_HOLD: &str = "waiting for :trust";
+
+/// The project files of agent CLIs that run code or change what an agent may do, as the message names them.
+pub const AGENT_CONFIGS: [&str; 9] = [".claude/", ".mcp.json", ".pi/", "opencode.json", "opencode.jsonc", ".opencode/", ".gemini/", ".cursor/", ".codex/"];
+
+/// Where you stand: the folder agents run in, whether it's a git repository, and whether it's trusted.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Workspace {
+    pub dir: PathBuf,
+    pub repo: bool,
+    pub trusted: bool,
+}
+
+impl Workspace {
+    fn kind(&self) -> &'static str {
+        if self.repo { "repository" } else { "folder" }
+    }
+}
+
+/// Which of AGENT_CONFIGS this folder has.
+pub fn agent_configs(dir: &Path) -> Vec<&'static str> {
+    AGENT_CONFIGS
+        .iter()
+        .copied()
+        .filter(|name| match std::fs::metadata(dir.join(name.trim_end_matches('/'))) {
+            Ok(m) => if name.ends_with('/') { m.is_dir() } else { m.is_file() },
+            Err(_) => false,
+        })
+        .collect()
+}
+
+/// What starting an agent says while the repository isn't trusted.
+pub fn untrusted_message(w: &Workspace) -> String {
+    let found = agent_configs(&w.dir);
+    let list = if found.is_empty() { ".claude/, .pi/, …".to_string() } else { found.join(", ") };
+    format!("this {} isn't trusted yet: its agent CLIs would load its own settings ({list}). :trust to allow it", w.kind())
+}
+
+/// The start screen's line while the repository isn't trusted.
+pub fn untrusted_note(w: &Workspace) -> String {
+    format!("this {} isn't trusted yet: :trust lets its agent CLIs run here", w.kind())
+}
+
+fn home() -> PathBuf {
+    std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default()
+}
+
+/// A folder no repository's settings come from: your home folder, else the temp folder.
+pub fn neutral_dir() -> PathBuf {
+    let h = home();
+    if !h.as_os_str().is_empty() && h.is_dir() { h } else { std::env::temp_dir() }
+}
+
+fn same(a: &Path, b: &Path) -> bool {
+    if key(a) == key(b) {
+        return true;
+    }
+    matches!((std::fs::canonicalize(a), std::fs::canonicalize(b)), (Ok(x), Ok(y)) if x == y)
+}
+
+/// Your own folders are never a repository to trust: your home folder and your config folders.
+fn yours(dir: &Path) -> bool {
+    let h = home();
+    let config = std::env::var_os("XDG_CONFIG_HOME").filter(|x| !x.is_empty()).map(PathBuf::from).unwrap_or_else(|| h.join(".config"));
+    [h, config, config::config_dir()].iter().any(|d| !d.as_os_str().is_empty() && same(dir, d))
+}
+
+/// Whether agent CLIs may run in this repository (or folder, outside one).
+pub fn is_repo_trusted(dir: &Path) -> bool {
+    yours(dir) || read().get(&key(dir)).and_then(|v| v.as_str()) == Some(REPOSITORY)
+}
+
+/// Trust this repository: its agent CLIs may run, until revoked. Whether it wasn't trusted before.
+pub fn trust_repo(dir: &Path) -> std::io::Result<bool> {
+    if is_repo_trusted(dir) {
+        return Ok(false);
+    }
+    let mut all = read();
+    all.insert(key(dir), serde_json::Value::String(REPOSITORY.into()));
+    write(all).map(|_| true)
+}
+
+/// Forget a repository's trust, and its .vigent.toml's. Whether either was trusted.
+pub fn revoke_repo(dir: &Path) -> std::io::Result<bool> {
+    let mut all = read();
+    let keys = [key(dir), key(&std::path::absolute(dir).unwrap_or_else(|_| dir.to_path_buf()).join(PROJECT_CONFIG))];
+    let mut any = false;
+    for k in keys {
+        any |= all.remove(&k).is_some();
+    }
+    if any {
+        write(all)?;
+    }
+    Ok(any)
+}
+
+/// Everything trusted, in order: (path, whether it's a repository; else a .vigent.toml as it was when trusted).
+pub fn trusted_entries() -> Vec<(String, bool)> {
+    let mut v: Vec<(String, bool)> = read().into_iter().map(|(k, v)| (k, v.as_str() == Some(REPOSITORY))).collect();
+    v.sort();
+    v
+}
+
+/// Where you stand when vigent starts in `cwd`: the repository (or this folder, outside one), and whether it's trusted.
+pub fn workspace_at(cwd: &Path, root: Option<&Path>) -> Workspace {
+    let dir = std::path::absolute(root.unwrap_or(cwd)).unwrap_or_else(|_| root.unwrap_or(cwd).to_path_buf());
+    let trusted = is_repo_trusted(&dir);
+    Workspace { dir, repo: root.is_some(), trusted }
+}
+
+/// `:trust`: trust the repository, so its agent CLIs may run (agents that waited
+/// for it start), and its .vigent.toml as it is now, if it has one. With nothing
+/// left to trust, it says the repository is trusted (src/trust.ts executeTrust).
+pub fn execute_trust(app: &mut App) -> String {
+    let Some(w) = app.agents.workspace.clone() else {
+        return execute_project_trust(app);
+    };
+    let newly = match trust_repo(&w.dir) {
+        Ok(n) => n,
+        Err(e) => return format!("can't trust this {}: {e}", w.kind()),
+    };
+    if let Some(x) = app.agents.workspace.as_mut() {
+        x.trusted = true;
+    }
+    // the engines' own commands may run here now
+    crate::engines::detect::set_probe_dir(None);
+    let file = project_file(app.root.as_deref()).filter(|f| f.exists()).map(|_| execute_project_trust(app));
+    // the agents that waited go once the file's arguments and hooks are in place
+    app.release_trust_holds();
+    match (newly, file) {
+        (false, Some(f)) => f,
+        (false, None) => format!("this {} is trusted", w.kind()),
+        (true, Some(f)) => format!("trusted this {} · {f}", w.kind()),
+        (true, None) => format!("trusted this {}", w.kind()),
+    }
 }
 
 /// The project's .vigent.toml (at the repository root), if there's a repository.
@@ -174,19 +329,52 @@ fn apply_new_mappings(keymap: &mut Keymap, before: &[(KeyMode, String, RhsValue)
     }
 }
 
-/// `vigent trust`, in the project.
-pub fn command(_args: &[String]) -> i32 {
+/// `vigent trust`: trust this repository (outside one, this folder), so its agent
+/// CLIs may run, and its .vigent.toml as it is now. `--list` shows what's
+/// trusted, `--revoke [folder]` forgets a repository's trust (src/cli.ts trustCommand).
+pub fn command(args: &[String]) -> i32 {
     let cwd = std::env::current_dir().unwrap_or_default();
+    match args.first().map(String::as_str) {
+        Some("--list") => {
+            let all = trusted_entries();
+            if all.is_empty() {
+                println!("nothing is trusted yet");
+            }
+            for (p, repo) in all {
+                println!("{}  {p}", if repo { "repository" } else { "file      " });
+            }
+            return 0;
+        }
+        Some("--revoke") => {
+            let from = args.get(1).map(|a| std::path::absolute(a).unwrap_or_else(|_| PathBuf::from(a))).unwrap_or_else(|| cwd.clone());
+            let dir = if from.exists() { crate::worktree::repo_root(&from) } else { None }.unwrap_or(from);
+            match revoke_repo(&dir) {
+                Ok(true) => println!("revoked trust in {}", dir.display()),
+                Ok(false) => println!("{} isn't trusted", dir.display()),
+                Err(e) => {
+                    eprintln!("vigent: {e}");
+                    return 1;
+                }
+            }
+            return 0;
+        }
+        Some(_) => {
+            eprintln!("usage: vigent trust [--list | --revoke [folder]]");
+            return 1;
+        }
+        None => {}
+    }
     let root = crate::worktree::repo_root(&cwd);
-    let file = project_file(root.as_deref());
-    let Some(file) = file.filter(|f| f.exists()) else {
-        let where_ = match &root {
-            Some(r) => format!(" (looked in {})", r.display()),
-            None => " (not in a git repository)".into(),
-        };
-        eprintln!("vigent: no {PROJECT_CONFIG} here{where_}");
+    let dir = std::path::absolute(root.as_deref().unwrap_or(&cwd)).unwrap_or_else(|_| cwd.clone());
+    if let Err(e) = trust_repo(&dir) {
+        eprintln!("vigent: {e}");
         return 1;
-    };
+    }
+    println!("trusted {}", dir.display());
+    let file = dir.join(PROJECT_CONFIG);
+    if root.is_none() || !file.exists() {
+        return 0;
+    }
     let content = std::fs::read_to_string(&file).unwrap_or_default();
     // read over your config, as vigent starts
     let gated = waiting(&content, config::load(&config::config_path(), LoadOptions::default()).config);

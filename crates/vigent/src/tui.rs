@@ -43,6 +43,13 @@ pub fn run(version: &'static str, cwd: PathBuf, theme_def: crate::theme::ThemeDe
     }
     let (tx, rx) = channel();
     let mut app = App::new(version, cwd, "default", config, keymap, tx.clone());
+    // agent CLIs load the repository's own settings: none runs there until you trust it,
+    // and the engines' own commands (sign-in checks, model lists) run outside it until then
+    let workspace = crate::trust::workspace_at(&app.cwd, app.root.as_deref());
+    if !workspace.trusted {
+        crate::engines::detect::set_probe_dir(Some(crate::trust::neutral_dir()));
+    }
+    app.agents.workspace = Some(workspace);
     app.theme.set_def(theme_def);
     // --engine / config's engine, and model and effort for new agents (before agents reopen: one saved
     // on pi moves to the engine new agents use when pi isn't here)

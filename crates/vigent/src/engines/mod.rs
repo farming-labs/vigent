@@ -387,6 +387,8 @@ pub struct Launch {
     pub ask: bool,
     /// leave these out of its environment (detection's dropEnv)
     pub drop_env: Vec<String>,
+    /// why the CLI can't run here now (the repository isn't trusted yet)
+    pub blocked: Option<String>,
 }
 
 /// Engine-wide state on the App (Engines area: add fields here, not to App).

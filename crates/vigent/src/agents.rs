@@ -43,11 +43,13 @@ pub struct Agents {
     pub storage: Option<worktree::Health>,
     /// what runs hooks (None: run_hook; tests put a stand-in here, as TypeScript's app.hookRunner)
     pub hook_runner: Option<HookRunner>,
+    /// the repository agents run in and whether you've trusted it (set at startup; None: nothing waits for trust)
+    pub workspace: Option<crate::trust::Workspace>,
 }
 
 impl Default for Agents {
     fn default() -> Self {
-        Agents { alt: 0, terminal_focused: true, alerts: None, making: vec![], last_stat: None, races: vec![], storage: None, hook_runner: None }
+        Agents { alt: 0, terminal_focused: true, alerts: None, making: vec![], last_stat: None, races: vec![], storage: None, hook_runner: None, workspace: None }
     }
 }
 
@@ -352,9 +354,44 @@ impl App {
         self.engines.new_model.get(engine).cloned().filter(|m| m != "default")
     }
 
+    /// Why no agent CLI may start here yet: the repository isn't trusted (never in demo mode).
+    pub fn untrusted(&self) -> Option<String> {
+        let w = self.agents.workspace.as_ref()?;
+        if self.serve.demo || w.trusted {
+            return None;
+        }
+        Some(crate::trust::untrusted_message(w))
+    }
+
+    /// A reopened agent in a repository that isn't trusted: shown, but nothing runs until :trust.
+    pub fn hold_until_trusted(&mut self, i: usize) -> bool {
+        if self.untrusted().is_none() {
+            return false;
+        }
+        self.sessions[i].hold(crate::trust::TRUST_HOLD);
+        true
+    }
+
+    /// The repository is trusted now: the agents that waited for it start, and their prompts go.
+    pub fn release_trust_holds(&mut self) {
+        for i in 0..self.sessions.len() {
+            if self.sessions[i].closed || self.sessions[i].hold_reason.as_deref() != Some(crate::trust::TRUST_HOLD) {
+                continue;
+            }
+            self.sessions[i].release();
+            self.start_reopened(i);
+            self.drain(i);
+        }
+    }
+
     /// A new agent, in a worktree of its own made in the background (src/app.ts startAgent).
     /// Its slot, or None (and why, on the message line).
     pub fn start_agent(&mut self, name: &str, o: NewAgent) -> Option<usize> {
+        // the agent CLI would load the repository's own settings: not before you trust it
+        if let Some(why) = self.untrusted() {
+            self.say(why, "ErrorMsg");
+            return None;
+        }
         // the engine (what's asked, else :engine / --engine / config, else auto's pick), or why it can't start
         let opts = engines::select::StartOpts { engine: o.engine.clone(), model: o.model.clone(), effort: o.effort.clone() };
         let engine = match engines::select::engine_for_new(self, &opts) {
@@ -821,10 +858,21 @@ impl App {
         if r.agents.iter().any(|a| self.stranded(&a.meta)) {
             self.engines.infos = engines::detect_all(&self.engines.env, 8000);
         }
+        let mut held = 0;
         for a in &r.agents {
             let s = self.reopen(&a.meta, &a.branch, &a.path, a.backend.clone());
             let i = self.add_session(s, false);
-            self.start_reopened(i);
+            // shown, but resumed only once you trust the repository
+            if self.hold_until_trusted(i) {
+                held += 1;
+            } else {
+                self.start_reopened(i);
+            }
+        }
+        if held > 0
+            && let Some(why) = self.untrusted()
+        {
+            warnings.push(why);
         }
         let n = self.open().len();
         if n > 0 {
@@ -1007,7 +1055,9 @@ impl App {
         let s = self.reopen(&meta, &branch, &w.path, view.backend);
         let name = s.name.clone();
         let i = self.add_session(s, true);
-        self.start_reopened(i);
+        if !self.hold_until_trusted(i) {
+            self.start_reopened(i);
+        }
         self.say(format!("attached '{name}' to {branch}"), "ModeMsg");
     }
 
@@ -1144,6 +1194,9 @@ impl App {
     /// with add_session once the window is split.
     pub fn fork_session(&self, parent: usize) -> Result<Session, String> {
         let p = self.sessions.get(parent).ok_or("no agent to split (:new <task> starts one)")?;
+        if let Some(why) = self.untrusted() {
+            return Err(why);
+        }
         let base = format!("{} (fork)", p.name);
         let taken = |n: &str| self.sessions.iter().any(|s| !s.closed && s.name == n);
         let mut name = base.clone();

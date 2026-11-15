@@ -74,6 +74,7 @@ pub fn launch(app: &App, engine: &str) -> Launch {
         allow: o.and_then(|o| o.allow.clone()).unwrap_or_default(),
         ask: o.and_then(|o| o.ask).unwrap_or(false),
         drop_env: app.engines.get(engine).map(|e| e.drop_env.clone()).unwrap_or_default(),
+        blocked: app.untrusted(),
     }
 }
 
@@ -233,6 +234,9 @@ fn busy(s: &Session) -> bool {
 /// engine's session goes, and the conversation goes along as text with the
 /// next prompt. While it's busy the move waits for the turn to end.
 pub fn switch_engine(app: &mut App, i: usize, to: ModelPick) {
+    if let Some(why) = app.untrusted() {
+        return app.say(why, "ErrorMsg");
+    }
     if app.race_of(Some(i)).is_some() {
         return app.say("a racer keeps its engine; :new starts an agent on another one", "ErrorMsg");
     }

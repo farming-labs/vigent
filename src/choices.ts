@@ -5,6 +5,7 @@
  * name can still be typed in the picker.
  */
 import { execFile } from "node:child_process";
+import { probeCwd } from "./workspace.js";
 import { CUSTOM_ENGINES, ENGINE_BINS, ENGINE_NAMES, type EngineId } from "./engines.js";
 import { piModels } from "./pi-cli.js";
 
@@ -135,7 +136,7 @@ export async function modelChoices(engine: EngineId, env: NodeJS.ProcessEnv = pr
 
 function opencodeModels(env: NodeJS.ProcessEnv): Promise<string[]> {
 	return new Promise((resolve) => {
-		execFile("opencode", ["models"], { env, timeout: 20000, maxBuffer: 4 * 1024 * 1024 }, (err, stdout) => {
+		execFile("opencode", ["models"], { cwd: probeCwd(), env, timeout: 20000, maxBuffer: 4 * 1024 * 1024 }, (err, stdout) => {
 			if (err) return resolve([]);
 			resolve(
 				String(stdout)
@@ -174,7 +175,7 @@ export function codexModels(env: NodeJS.ProcessEnv = process.env): Promise<Codex
 
 function readCodexModels(env: NodeJS.ProcessEnv): Promise<CodexModel[]> {
 	return new Promise((resolve) => {
-		execFile(ENGINE_BINS.codex, ["debug", "models"], { env, timeout: 20000, maxBuffer: 16 * 1024 * 1024 }, (err, stdout) => {
+		execFile(ENGINE_BINS.codex, ["debug", "models"], { cwd: probeCwd(), env, timeout: 20000, maxBuffer: 16 * 1024 * 1024 }, (err, stdout) => {
 			if (err) return resolve([]);
 			resolve(parseCodexModels(String(stdout)));
 		});

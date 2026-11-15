@@ -11,6 +11,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { after, test } from "node:test";
 import { Tty } from "./support/terminal.mjs";
+import { trustRepo } from "./support/trust.mjs";
 
 const skip = process.platform === "win32" || spawnSync("python3", ["-c", "import pty"]).status !== 0 ? "needs python3 and a Unix pty" : false;
 const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "vigent-handoff-")));
@@ -75,6 +76,8 @@ say({ type: "turn.completed", usage: { input_tokens: 10, output_tokens: 5 } });
 	fs.writeFileSync(path.join(repo, "a.js"), "1\n");
 	git("add", "a.js");
 	git("commit", "-qm", "init");
+	// vigent starts agent CLIs only in a repository you've trusted
+	trustRepo(repo, env);
 	const calls = (engine) => (fs.existsSync(logs[engine]) ? fs.readFileSync(logs[engine], "utf8").trim().split("\n").map(JSON.parse) : []);
 	return { repo, env, calls };
 }

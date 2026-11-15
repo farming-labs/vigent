@@ -20,7 +20,7 @@ pub static COMMANDS: &[Command] = &[
         aliases: &[],
         also: None,
         run: |app, _| {
-            let msg = crate::trust::execute_project_trust(app);
+            let msg = crate::trust::execute_trust(app);
             app.say(msg, "ModeMsg");
         },
     },

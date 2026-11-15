@@ -30,6 +30,9 @@ themes:
   vigent worktree gc                         free riftri storage no worktree uses
   vigent config init                         write a commented config.toml
   vigent config check                        validate config.toml (theme, options, keys)
+  vigent trust                               trust this repository: its agent CLIs may run, and its .vigent.toml
+  vigent trust --list                        what's trusted
+  vigent trust --revoke [folder]             forget a repository's trust (and its .vigent.toml's)
 
 registry (themes, templates, keymaps, commands, engines and setups people share):
   vigent add <name>                          show an entry's file and what it runs, then add it

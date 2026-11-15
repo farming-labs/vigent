@@ -7,6 +7,7 @@
  * their version and login-status commands.
  */
 import { execFile } from "node:child_process";
+import { probeCwd } from "./workspace.js";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -182,7 +183,8 @@ interface RunResult {
 /** Run a command with a timeout; never throws. */
 function run(cmd: string, args: string[], timeoutMs: number, env: NodeJS.ProcessEnv): Promise<RunResult> {
 	return new Promise((resolve) => {
-		execFile(cmd, args, { timeout: timeoutMs, env, maxBuffer: 1024 * 1024 }, (err, stdout, stderr) => {
+		// outside a repository you haven't trusted: a CLI's status command reads its settings too
+		execFile(cmd, args, { cwd: probeCwd(), timeout: timeoutMs, env, maxBuffer: 1024 * 1024 }, (err, stdout, stderr) => {
 			const code = err ? ((err as NodeJS.ErrnoException & { code?: unknown }).code === "ENOENT" ? null : ((err as { code?: number }).code ?? 1)) : 0;
 			resolve({ ok: !err, code: typeof code === "number" ? code : null, stdout: String(stdout ?? ""), stderr: String(stderr ?? "") });
 		});

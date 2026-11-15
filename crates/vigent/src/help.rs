@@ -25,7 +25,7 @@ pub const EX_HELP: &[(&str, &str)] = &[
     (":cost", "tokens and money each agent has used, and the total"),
     (":pi", "a pi agent's extensions, commands, skills and prompt templates"),
     (":serve  /  :serve stop", "follow and prompt your agents from your phone (local: this machine only)"),
-    (":trust", "let this project's .vigent.toml run its hooks and engine arguments"),
+    (":trust", "trust this repository: its agent CLIs may run, and its .vigent.toml's hooks and engine arguments"),
     (":tree", "the conversation's branches; go back and branch"),
     (":marks  /  :jumps", "this agent's marks (m{a-z}, '{a-z}) and jump list (<C-o>, <Tab>)"),
     (":history", "the commands and searches you ran this time"),

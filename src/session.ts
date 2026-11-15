@@ -92,6 +92,9 @@ export abstract class Session {
 		}, delayMs);
 	}
 
+	/** Start the agent's process now, if it keeps one running (pi), so it's ready before the first prompt. */
+	warm(): void {}
+
 	/** Stop background work (stat refresh). Subclasses also stop the agent. */
 	dispose() {
 		if (this.statTimer) clearTimeout(this.statTimer);

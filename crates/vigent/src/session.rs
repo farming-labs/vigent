@@ -384,6 +384,12 @@ impl Session {
             self.state = State::Error;
             return;
         };
+        // the CLI loads the repository's own settings: not before you trust it
+        if let Some(why) = &launch.blocked {
+            self.items.push(Item::Error(format!("error: {why}")));
+            self.state = State::Error;
+            return;
+        }
         let opts = RunOpts {
             cwd: self.path.to_string_lossy().into_owned(),
             resume: self.resume_id.clone(),
