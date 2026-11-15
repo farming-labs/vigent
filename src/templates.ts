@@ -26,6 +26,8 @@ export interface Template {
 	/** false: run in your checkout instead of a new worktree */
 	worktree?: boolean;
 	builtin?: boolean;
+	/** from the project's .vigent.toml */
+	project?: boolean;
 }
 
 export const BUILTIN_TEMPLATES: Template[] = [
@@ -70,7 +72,10 @@ export function fillTemplate(t: Template, task: string): string {
 	return t.prompt.split("{task}").join(text);
 }
 
-/** Built-ins first, then yours (yours replace a built-in of the same name), in config order. */
+/**
+ * Built-ins first, then yours (yours replace a built-in of the same name), in config order.
+ * A project's never does: one named like a built-in or yours is read as project-<name>.
+ */
 export function allTemplates(user: Record<string, Template>): Template[] {
 	const out = BUILTIN_TEMPLATES.map((t) => user[t.name] ?? { ...t, builtin: true });
 	for (const t of Object.values(user)) if (!BUILTIN_TEMPLATES.some((b) => b.name === t.name)) out.push(t);

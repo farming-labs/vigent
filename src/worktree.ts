@@ -16,6 +16,7 @@
  */
 import { execFile, execFileSync } from "node:child_process";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import { promisify } from "node:util";
 import { describeFailure, riftriAdd, riftriAddAsync, riftriBinary, riftriGc, riftriOwnership, riftriRemove, RIFTRI_INSTALL, type WorktreeBackend } from "./riftri.js";
@@ -51,6 +52,8 @@ export interface WorktreeConfig {
 	base?: string;
 	/** "auto": riftri when installed (copy-on-write), else git · "riftri": always · "git": never */
 	backend: WorktreeBackend;
+	/** `dir` came from a project's .vigent.toml you haven't trusted: it must stay beside the repository */
+	dirFromProject?: boolean;
 }
 
 export const DEFAULT_WORKTREE: WorktreeConfig = {
@@ -172,6 +175,85 @@ export function worktreesDir(root: string, config: WorktreeConfig = DEFAULT_WORK
 	return path.resolve(root, dir);
 }
 
+/**
+ * Why an untrusted project's [worktree] dir can't be used, or undefined. It has to name a
+ * folder inside the one the repository is in (`../{repo}-worktrees`, `wt`), with no
+ * dot-folders on the way, so a repository can't check itself out into ~/.config, ~/.vim or
+ * ~/.ssh. Read from the text alone; the folder on disk is checked again (symlinks
+ * included) when a worktree is made.
+ */
+export function projectWorktreeDirProblem(dir: string): string | undefined {
+	if (path.posix.isAbsolute(dir) || path.win32.isAbsolute(dir) || /^[A-Za-z]:/.test(dir)) return "is an absolute path";
+	const parts = dir.split(/[\\/]+/).filter((p) => p !== "" && p !== ".");
+	const rest = parts[0] === ".." ? parts.slice(1) : parts;
+	if (rest.length === 0) return "isn't a folder inside the one the repository is in";
+	for (const p of rest) {
+		if (p === "..") return "goes outside the folder the repository is in";
+		if (p.startsWith(".")) return `is in a dot-folder (${p})`;
+	}
+	return undefined;
+}
+
+/** A path with every symlink resolved, for the part that exists; undefined when a symlink on the way is broken. */
+function resolveExisting(p: string): string | undefined {
+	let cur = path.resolve(p);
+	const rest: string[] = [];
+	for (;;) {
+		try {
+			return path.join(fs.realpathSync(cur), ...rest);
+		} catch {
+			// not there yet, unless it's a symlink to nowhere
+		}
+		try {
+			fs.lstatSync(cur);
+			return undefined;
+		} catch {
+			// missing: look at its parent
+		}
+		const up = path.dirname(cur);
+		if (up === cur) return path.resolve(p);
+		rest.unshift(path.basename(cur));
+		cur = up;
+	}
+}
+
+const within = (child: string, parent: string) => {
+	const r = path.relative(parent, child);
+	return r === "" || (!r.startsWith("..") && !path.isAbsolute(r));
+};
+
+/**
+ * Why agent worktrees can't go in `dir` (worktreesDir), or undefined. Symlinks are resolved
+ * first. Never your home folder (or one that holds it), and never inside a dot-folder
+ * outside the repository (~/.config/nvim/plugin, ~/.vim, ~/.ssh: editors and shells load
+ * what's there), apart from those the repository itself is in. A dir from an untrusted
+ * .vigent.toml must also stay inside the folder the repository is in, with no dot-folder at all.
+ */
+export function worktreesDirProblem(root: string, dir: string, fromProject = false): string | undefined {
+	const repo = resolveExisting(root) ?? path.resolve(root);
+	const target = resolveExisting(dir);
+	if (target === undefined) return "goes through a broken symlink";
+	const home = os.homedir() ? (resolveExisting(os.homedir()) ?? path.resolve(os.homedir())) : "";
+	if (home && path.dirname(home) !== home && within(home, target)) return target === home ? "is your home folder" : "holds your home folder";
+	const parent = path.dirname(repo);
+	if (fromProject && (target === parent || !within(target, parent))) return "is outside the folder the repository is in";
+	// from where the repository's own path and the target's part
+	let from = parent;
+	if (!fromProject) {
+		// inside the repository (dir = ".agents") is yours to pick; it's kept out of git status
+		if (within(target, repo)) return undefined;
+		from = repo;
+		while (!within(target, from)) from = path.dirname(from);
+	}
+	const name = path.basename(repo);
+	for (const seg of path.relative(from, target).split(path.sep)) {
+		// the repository's own folder, and folders named after it (../.dotfiles-worktrees)
+		if (seg === name || seg.startsWith(`${name}-`) || seg.startsWith(`${name}_`)) continue;
+		if (seg.startsWith(".")) return `is in a dot-folder (${seg})`;
+	}
+	return undefined;
+}
+
 // ---------------------------------------------------------------------------
 // Create / remove / list
 // ---------------------------------------------------------------------------
@@ -217,9 +299,20 @@ export function planWorktree(root: string, agentName: string, config: WorktreeCo
 	if (!isValidBranch(wanted, root)) throw new Error(`'${wanted}' is not a valid branch name (check [worktree] branch)`);
 
 	const dir = worktreesDir(root, config);
+	const problem = worktreesDirProblem(root, dir, config.dirFromProject);
+	if (problem) throw new Error(`won't put worktrees in ${dir}: it ${problem} (check [worktree] dir${config.dirFromProject ? " in .vigent.toml" : ""})`);
+	// a symlink to nowhere counts as taken: git would write through it
+	const taken = (p: string) => {
+		try {
+			fs.lstatSync(p);
+			return true;
+		} catch {
+			return false;
+		}
+	};
 	let branch = wanted;
 	let folder = path.join(dir, wanted.replace(/\//g, "-"));
-	for (let n = 2; planned.has(folder) || branchExists(branch, root) || fs.existsSync(folder); n++) {
+	for (let n = 2; planned.has(folder) || branchExists(branch, root) || taken(folder); n++) {
 		branch = `${wanted}-${n}`;
 		folder = path.join(dir, branch.replace(/\//g, "-"));
 	}
