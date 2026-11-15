@@ -295,3 +295,31 @@ test("what a mapping runs: every way a right-hand side reaches the command line"
 	}
 	assert.equal(commandLineRisk("Land"), undefined, "a command nobody defines runs nothing");
 });
+
+test("what a mapping runs: :w with a file or !, and :serve, wait for :trust; a bare :w and :serve stop don't", () => {
+	const risk = (line, commands) => commandLineRisk(line, commands);
+	// :w writes the transcript over any file it names (:w! even over one that's there)
+	for (const line of ["w ~/.bashrc", "w! ~/.bashrc", "w!", "write ~/.bashrc", "write! x.md", "write!", ":w x", " w  ../x ", "%w x", "wq x", "wq!", "x x", "x!"]) {
+		assert.equal(risk(line), "write", line);
+	}
+	// :serve opens your agents to the network, :serve local to this machine
+	for (const line of ["serve", "serve local", "serve 9000", "serve local 9000", ":serve", "serve stop now", "serve {args}"]) {
+		assert.equal(risk(line), "serve", line);
+	}
+	// a bare :w only makes a new <agent>.md here and never overwrites one; :serve stop only closes it
+	for (const line of ["w", ":w", " w ", "write", "wq", "x", "serve stop", "serve  stop ", "wincmd w", "wa", "wqa", "xa", "Write x", "server", "sp x"]) {
+		assert.equal(risk(line), undefined, line);
+	}
+	// mappings that run them, and commands whose steps do
+	const risky = (rhs, opts) => mappingRisks("normal", rhs, opts).map((r) => `${r.risk}: ${r.line}`);
+	assert.deepEqual(risky(":w! ~/.bashrc<CR>"), ["write: w! ~/.bashrc"]);
+	assert.deepEqual(risky("q:write x.md<CR>"), ["write: write x.md"]);
+	assert.deepEqual(risky(":serve<CR>"), ["serve: serve"]);
+	assert.deepEqual(risky(":w<CR>"), []);
+	assert.deepEqual(risky(":serve stop<CR>"), []);
+	const commands = (n) => ({ Save: [["w! {args}"]], Share: [["serve local"]], Keep: [["w"]], Stop: [["serve stop"]] })[n] ?? [];
+	assert.deepEqual(risky(":Save<CR>", { commands }), ["command: Save"], "w! with no file still overwrites <agent>.md");
+	assert.deepEqual(risky(":Share<CR>", { commands }), ["command: Share"]);
+	assert.deepEqual(risky(":Keep<CR>", { commands }), []);
+	assert.deepEqual(risky(":Stop<CR>", { commands }), []);
+});
