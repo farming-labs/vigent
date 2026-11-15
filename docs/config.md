@@ -379,21 +379,31 @@ Test = "!npm test {args}"           # a shell command in the agent's worktree
 Land = ["!npm test", "pr"]          # one after another
 ```
 
+To say what one does, write it as a table: `run` takes the same string or list, and `description` is shown by `:command`, `:help` and <Tab>:
+
+```toml
+[commands.Fix]
+run = "new -t fix {args}"
+description = "fix what you describe, with the fix template"
+```
+
 - Names start with a capital letter, as in vim, so a command of yours never hides a built-in one.
 - `{args}` (or vim's `<args>`) is whatever you type after the name.
 - An ex command is anything you'd type after `:`; the leading `:` is optional.
 - A step that starts with `!` runs in a shell, in the focused agent's worktree (with no agent, in the repository). Like hooks, it sees `VIGENT_AGENT`, `VIGENT_BRANCH`, `VIGENT_WORKTREE`, `VIGENT_REPO` and `VIGENT_ENGINE`. What it prints goes into the agent's transcript, and its last line shows on the command line. A shell step that fails stops the steps after it, so `Land` opens a pull request only when the tests pass.
 - Map a key to one like any ex command: `"<leader>T" = ":Test<CR>"` under `[keys.normal]`.
+- A table takes only `run` and `description`; anything else, a `description` that isn't a string, or a table with no `run` is a warning, like every other mistake in config.toml.
+- <Tab> completes them: `:re<Tab>` offers your commands after the built-ins that fit (whatever the case you typed), with each one's description beside it in the list over the statusline.
 
 While vigent runs:
 
-- `:command` lists your commands.
+- `:command` lists your commands, each as `Name = steps · description`; `:help` lists them under YOUR COMMANDS.
 - `:command Name` shows one.
-- `:command Name {cmd}` defines one for this run. Steps are separated by `|`; from the first shell step on, the rest of the line belongs to the shell, so pipes work. `:command!` replaces an existing one.
+- `:command Name {cmd}` defines one for this run. Steps are separated by `|`; from the first shell step on, the rest of the line belongs to the shell, so pipes work. `:command!` replaces an existing one (and drops its description).
 - `:delcommand Name` forgets one.
 - `:!{cmd}` runs a shell command once, the same way.
 
-In a project's `.vigent.toml`, a command with a shell step waits for `:trust`. Commands made only of ex commands don't.
+In a project's `.vigent.toml`, a command with a shell step waits for `:trust`. Commands made only of ex commands don't. One that waits still completes, marked `(waits for :trust)`, and running it says so instead of `Not an editor command`. Once you `:trust` the file, it runs.
 
 Commands other people shared are in the [registry](registry.md): `vigent add --list command` lists them, and `vigent add land` adds `:Land` (the tests, then `:pr`) and its `<leader>L` mapping to your config.toml, after showing you every shell step.
 

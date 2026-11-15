@@ -532,6 +532,7 @@ engine = "auto"
 # Review = "new -t review {args}"
 # Test = "!npm test"
 # Land = ["!npm test", "pr"]      # one after another; a failing shell step stops the rest
+# Fix = { run = "new -t fix {args}", description = "fix it with the fix template" }   # :help and <Tab> show it
 
 # --- Templates -------------------------------------------------------------
 # Prompts you start agents with often. :new -t fix <task> starts an agent and
