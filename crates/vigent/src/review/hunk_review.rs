@@ -16,6 +16,7 @@ use ratatui::widgets::{Clear, Paragraph};
 
 use super::hunks::{FileDiff, patch_for};
 use crate::theme::Theme;
+use crate::printable::file_text;
 use crate::ui::text::{fit, width};
 
 struct Row {
@@ -93,9 +94,9 @@ impl HunkReview {
         let mut idx = 0;
         for f in &self.files {
             let what = if f.binary { "(binary: X drops it)".to_string() } else { plural(f.hunks.len(), "hunk") };
-            out.push(Row { text: format!("{}  {what}", f.path), group: "Title", hunk: None, header: true });
+            out.push(Row { text: format!("{}  {what}", file_text(&f.path)), group: "Title", hunk: None, header: true });
             for h in &f.hunks {
-                out.push(Row { text: h.header.clone(), group: "Special", hunk: Some(idx), header: true });
+                out.push(Row { text: file_text(&h.header), group: "Special", hunk: Some(idx), header: true });
                 for l in &h.lines {
                     let group = if l.starts_with('+') {
                         "Added"
@@ -106,7 +107,7 @@ impl HunkReview {
                     } else {
                         "NormalFloat"
                     };
-                    out.push(Row { text: fit(&l.replace('\t', "  "), w.max(1)), group, hunk: Some(idx), header: false });
+                    out.push(Row { text: fit(&file_text(l), w.max(1)), group, hunk: Some(idx), header: false });
                 }
                 idx += 1;
             }
@@ -292,5 +293,20 @@ impl HunkReview {
         let r = Rect::new(area.x + area.width.saturating_sub(w) / 2, area.y + area.height.saturating_sub(h) / 2, w.min(area.width), h);
         f.render_widget(Clear, r);
         f.render_widget(Paragraph::new(lines), r);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_hunks_escape_sequences_are_shown_as_text() {
+        let evil = "A\x1b]52;c;UFdORUQ=\x07B\x1b[2JC\u{9d}0;T\u{9c}D\u{202e}E";
+        let diff = format!("diff --git a/e b/e\n--- a/e\n+++ b/e\n@@ -1 +1 @@ {evil}\n-{evil}\n+{evil}\r\n");
+        let mut r = HunkReview::new("Review", super::super::hunks::parse_diff(&diff));
+        let text = r.render_plain(200).join("\n");
+        assert!(!text.chars().any(|c| c != '\n' && crate::printable::is_unsafe(c)), "{text:?}");
+        assert!(text.contains("+A\\x1b]52;c;UFdORUQ=\\x07B\\x1b[2JC\\x9d0;T\\x9cD\\u202eE"), "{text:?}");
     }
 }

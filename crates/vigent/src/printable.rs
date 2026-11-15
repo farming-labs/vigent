@@ -44,6 +44,33 @@ fn is_bidi(c: char) -> bool {
     matches!(c, '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
 }
 
+/// A control character a terminal acts on (tabs and line ends aside), or a
+/// bidi control: what config values and names may not hold (src/printable.ts CONTROL).
+pub fn is_unsafe(c: char) -> bool {
+    let n = c as u32;
+    (n <= 0x1f && !matches!(c, '\t' | '\n' | '\r')) || (0x7f..=0x9f).contains(&n) || is_bidi(c)
+}
+
+/// Text for a plain terminal with every character it would act on written
+/// out instead: `\x1b`, `\x9b`, `\r`, `\u202e`. Tabs and newlines stay
+/// (src/printable.ts escapeControls).
+pub fn escape_controls(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        let n = c as u32;
+        if c == '\r' {
+            out.push_str("\\r");
+        } else if !is_unsafe(c) {
+            out.push(c);
+        } else if n < 0x100 {
+            out.push_str(&format!("\\x{n:02x}"));
+        } else {
+            out.push_str(&format!("\\u{n:04x}"));
+        }
+    }
+    out
+}
+
 /// CSI, OSC, DCS/SOS/PM/APC strings and two-byte escapes, removed.
 pub fn strip_escapes(s: &str) -> String {
     let chars: Vec<char> = s.chars().collect();
@@ -102,6 +129,13 @@ pub fn strip_escapes(s: &str) -> String {
     out
 }
 
+/// A line of a file (a diff's) as vigent draws it: what a terminal would act
+/// on is written out (`\x1b]52;…`), so you see what the file holds; tabs are
+/// two spaces and a CRLF line's `\r` goes (src/printable.ts fileText).
+pub fn file_text(line: &str) -> String {
+    escape_controls(line.strip_suffix('\r').unwrap_or(line)).replace('\t', "  ")
+}
+
 /// One row: newlines, carriage returns and tabs become spaces; other cursor movers go.
 pub fn one_row(line: &str) -> String {
     if !line.chars().any(|c| (c as u32) < 0x20 || c == '\x7f') {
@@ -139,5 +173,13 @@ mod tests {
         assert_eq!(printable("\u{9d}52;c;aGk=\u{9c}"), "52;c;aGk=");
         assert_eq!(printable("abc\u{202e}dcba\u{2066}x\u{200f}"), "abcdcbax");
         assert_eq!(printable("\x1b[8mhidden\x1b[0m"), "hidden");
+    }
+
+    #[test]
+    fn escaped_for_a_plain_terminal() {
+        assert_eq!(escape_controls("ok\tname\n"), "ok\tname\n");
+        assert_eq!(escape_controls("a\x1b]52;c;eA==\x07b\u{9b}2J\u{202e}"), "a\\x1b]52;c;eA==\\x07b\\x9b2J\\u202e");
+        assert_eq!(file_text("+\tx \x1b]52;c;eA==\x07 a\rb\r"), "+  x \\x1b]52;c;eA==\\x07 a\\rb");
+        assert!(is_unsafe('\x1b') && is_unsafe('\u{85}') && is_unsafe('\u{2067}') && !is_unsafe('\n') && !is_unsafe('é'));
     }
 }
