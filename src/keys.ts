@@ -15,6 +15,7 @@
  */
 import { parseKey } from "./tui.js";
 import { didYouMean } from "./suggest.js";
+import { COMMAND_NAME, fillArgs, normalizeStep } from "./commands.js";
 
 export type KeyMode = "normal" | "insert" | "visual" | "command";
 export const KEY_MODES: KeyMode[] = ["normal", "insert", "visual", "command"];
@@ -548,6 +549,199 @@ function rhsToText(value: unknown): string {
 	if (value === false) return "<Nop>";
 	if (Array.isArray(value)) return value.map(rhsToText).join(", ");
 	return String(value);
+}
+
+// ---------------------------------------------------------------------------
+// What a mapping runs (a project's [keys] wait for :trust when it's risky)
+// ---------------------------------------------------------------------------
+
+/**
+ * A command line a mapping runs. `sure` is false when the mapping edits the
+ * line in ways vigent doesn't follow (cursor moves, history, completion,
+ * pasting): what runs is then unknown, and counts as risky.
+ */
+export interface CommandLine {
+	text: string;
+	sure: boolean;
+}
+
+/** keys that run the command line */
+const SUBMIT_KEYS = new Set(["<CR>", "<C-m>", "<C-j>"]);
+/** the same, typed out as text (`<NL>` has no key of its own, so it types itself) */
+const SUBMIT_TEXT = /<(?:cr|enter|return|nl|c-m|c-j)>/gi;
+const LINE_LEAVE = new Set(["<Esc>", "<C-c>"]);
+const BACKSPACE = new Set(["<BS>", "<C-h>"]);
+
+/**
+ * The command lines a mapping can run, simulated over its right-hand side the
+ * way vigent replays it, erring on the side of finding one: `:` in NORMAL or
+ * VISUAL opens the command line, text typed there adds to it, <CR> runs it.
+ * A [keys.command] mapping starts on a line vigent can't see, so what it
+ * types is taken as the whole line.
+ */
+export function mappingCommandLines(mode: KeyMode, rhs: unknown, leader = DEFAULT_LEADER): CommandLine[] {
+	let parts: Rhs[];
+	try {
+		parts = parseRhs(rhs, leader);
+	} catch {
+		return []; // never applied: buildKeymap warns about it
+	}
+	const out: CommandLine[] = [];
+	let where: "normal" | "insert" | "line" = mode === "insert" ? "insert" : mode === "command" ? "line" : "normal";
+	let buf = "";
+	/** the buffer is exactly `buf`, with the cursor at its end */
+	let sure = true;
+	/** text vigent can't see comes before `buf` (a [keys.command] mapping's line) */
+	let hidden = mode === "command";
+	/** how much of `buf` was looked at for <CR> typed out as text */
+	let scanned = 0;
+
+	const enter = (text: string) => {
+		where = "line";
+		buf = "";
+		sure = true;
+		hidden = false;
+		scanned = 0;
+		type(text);
+	};
+	const submit = () => {
+		out.push({ text: buf, sure });
+		where = "normal";
+		buf = "";
+		sure = true;
+		hidden = false;
+		scanned = 0;
+	};
+	const type = (text: string) => {
+		buf += text;
+		// <CR> typed out as text: count the line before it as run; past it, the line is unknown
+		SUBMIT_TEXT.lastIndex = Math.max(0, scanned - 7);
+		for (let m = SUBMIT_TEXT.exec(buf); m; m = SUBMIT_TEXT.exec(buf)) {
+			if (m.index + m[0].length <= scanned) continue;
+			out.push({ text: buf.slice(0, m.index), sure });
+			sure = false;
+		}
+		scanned = buf.length;
+	};
+	const leave = () => {
+		// unsure where the line editor is (e.g. its NORMAL mode): stay on the line, so more is found
+		if (where === "line" && !sure) return;
+		where = "normal";
+		buf = "";
+		scanned = 0;
+	};
+	const backspace = () => {
+		if (!sure) return; // keep the text
+		if (buf === "") {
+			// vim: backspace on an empty line leaves it (unless there's text vigent can't see)
+			if (!hidden) leave();
+			return;
+		}
+		buf = [...buf].slice(0, -1).join("");
+		scanned = Math.min(scanned, buf.length);
+	};
+	const clear = () => {
+		if (!sure) return;
+		buf = "";
+		hidden = false;
+		scanned = 0;
+	};
+
+	for (const part of parts) {
+		if (part.kind === "nop") continue;
+		if (part.kind === "ex") {
+			if (part.execute) out.push({ text: part.cmd, sure: true });
+			else enter(part.cmd);
+			continue;
+		}
+		if (part.kind === "action") {
+			const name = part.name;
+			if (name === "mode.command") enter("");
+			else if (where === "line") {
+				if (name === "edit.submit") submit();
+				else if (name === "mode.normal") leave();
+				else if (name === "edit.backspace") backspace();
+				else if (name === "edit.clear") clear();
+				else if (name !== "edit.delete" && name !== "noop") sure = false;
+			} else if (where === "insert" && name !== "noop") where = "normal";
+			continue;
+		}
+		for (const key of part.keys) {
+			const text = tokenText(key);
+			if (where === "normal") {
+				if (key === ":") enter("");
+			} else if (where === "insert") {
+				// <Esc>, <C-[>, <CR> (the prompt is sent) or any other key: taken as back in NORMAL, where : opens the line
+				if (text === undefined) where = "normal";
+			} else if (text !== undefined) type(text);
+			else if (SUBMIT_KEYS.has(key)) submit();
+			else if (LINE_LEAVE.has(key)) leave();
+			else if (BACKSPACE.has(key)) backspace();
+			else if (key === "<C-u>") clear();
+			else if (key !== "<Del>") sure = false;
+		}
+	}
+	return out;
+}
+
+/** Leading `:`, whitespace and a range: `%`, `1,5`, `.,$`, `'<,'>`. */
+const RANGE = /^(?:[\s:%.$,;+-]|\d|'[A-Za-z<>])*/;
+/**
+ * Commands that define commands or mappings, or replay keys or lines:
+ * :command, :delcommand, every :map / :noremap / :unmap, :normal, :execute, :source.
+ */
+const DEFINES =
+	/^(?:com(?:m(?:a(?:nd?)?)?)?|delc(?:o(?:m(?:m(?:a(?:nd?)?)?)?)?)?|[nvxsoilct]?(?:nore|un)?map|[nvxsoilct]?mapc(?:lear)?|[nvxsoilct]?no(?:r(?:e(?:m(?:ap?)?)?)?)?|[nvxsoilct]m(?:ap?)?|[nvxsoilct]?unm(?:ap?)?|[nvxsoilct]u(?:n(?:m(?:ap?)?)?)?|[nvx]n|norm(?:al?)?|exe(?:c(?:u(?:te?)?)?)?|so(?:u(?:r(?:ce?)?)?)?)$/;
+
+/** Why a command line is risky from an untrusted file: it runs a shell command, defines or replays, grants trust, or calls a command that does. */
+export type LineRisk = "shell" | "defines" | "trust" | "command" | "unknown";
+
+/** The steps of each command a line could call by name (yours and the file's own). */
+export type CommandSteps = (name: string) => string[][];
+
+/**
+ * Whether a command line, run from a project's untrusted .vigent.toml, could
+ * run a program or change what runs: `:!cmd`, `:command`, `:nnoremap`,
+ * `:normal`, `:trust`, or one of your commands whose steps do.
+ */
+export function commandLineRisk(line: string, commands: CommandSteps = () => [], depth = 0): LineRisk | undefined {
+	const s = line.replace(RANGE, "");
+	if (s.startsWith("!")) return "shell";
+	const word = /^[A-Za-z]*/.exec(s)?.[0] ?? "";
+	if (DEFINES.test(word)) return "defines";
+	// :trust lets the file run everything; :permissions allow lets Claude Code run more
+	if (word === "trust" || (/^perm(?:s|issions?)?$/.test(word) && /^\S*\s+allow(?:\s|$)/.test(s))) return "trust";
+	const m = /^(\S*)\s*([\s\S]*)$/.exec(s) as RegExpExecArray;
+	if (!COMMAND_NAME.test(m[1])) return undefined;
+	for (const steps of commands(m[1])) {
+		for (const step of steps) {
+			if (depth >= 10) return "command";
+			const run = fillArgs(normalizeStep(step), m[2].trim());
+			if (run.startsWith("!") || commandLineRisk(run, commands, depth + 1)) return "command";
+		}
+	}
+	return undefined;
+}
+
+/** Every risky command line a mapping can run, each with why. */
+export function mappingRisks(mode: KeyMode, rhs: unknown, opts: { leader?: string; commands?: CommandSteps } = {}): { line: string; risk: LineRisk }[] {
+	const out: { line: string; risk: LineRisk }[] = [];
+	for (const l of mappingCommandLines(mode, rhs, opts.leader)) {
+		const risk = l.sure ? commandLineRisk(l.text, opts.commands) : "unknown";
+		if (risk) out.push({ line: l.text, risk });
+	}
+	return out;
+}
+
+/** The leader a keymap uses: the given one if it's a key, else the default (as buildKeymap). */
+export function leaderOrDefault(leader: string | undefined): string {
+	if (leader === undefined) return DEFAULT_LEADER;
+	try {
+		parseKeys(leader);
+		return leader;
+	} catch {
+		return DEFAULT_LEADER;
+	}
 }
 
 // ---------------------------------------------------------------------------

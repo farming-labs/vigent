@@ -42,6 +42,18 @@ export function fillArgs(step: string, args: string): string {
 	return step.split("{args}").join(args).split("<args>").join(args);
 }
 
+/** Each command's steps as a file gives them, valid or not (what its mappings could call). */
+export function commandSteps(value: unknown): UserCommands {
+	const out: UserCommands = {};
+	if (!value || typeof value !== "object" || Array.isArray(value)) return out;
+	for (const [name, v] of Object.entries(value)) {
+		const run = v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>).run : v;
+		const steps = [run].flat().filter((s): s is string => typeof s === "string");
+		if (steps.length) out[name] = steps;
+	}
+	return out;
+}
+
 /** Parse [commands]. Mistakes are warnings; shell commands from an untrusted file are gated. */
 export function parseCommands(
 	value: unknown,
