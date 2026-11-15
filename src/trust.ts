@@ -3,11 +3,11 @@
  *
  * A project config can set the theme, templates, keys and worktree layout
  * freely. The parts that run programs (hooks, engine arguments, custom
- * engine commands, shell commands under [commands], Claude Code
- * permission rules, and mappings that can run a shell command or define
- * commands or mappings) only count once you trust that file, like direnv's
- * `allow`: `:trust` in vigent, or `vigent trust` in the project. Trust is
- * for the file as it is now; if it changes, vigent asks again.
+ * engine commands, Claude Code permission rules, and commands and mappings
+ * that can run a shell command, define commands or mappings, write a file
+ * they name or start :serve) only count once you trust that file, like
+ * direnv's `allow`: `:trust` in vigent, or `vigent trust` in the project. Trust is for the file as it is now; if it
+ * changes, vigent asks again.
  */
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
@@ -85,7 +85,9 @@ export function executeProjectTrust(ctx: TrustSyncContext): string {
 	} catch (err) {
 		return `can't trust ${PROJECT_CONFIG}: ${(err as Error).message.split("\n")[0]}`;
 	}
-	const { gated } = loadConfig(projectFile, { trusted: false, label: PROJECT_CONFIG });
+	// what waits, read over a copy of the config in use: a mapping or command that waits only
+	// because it calls one of your commands is named too
+	const { gated } = loadConfig(projectFile, { base: structuredClone(config), trusted: false, label: PROJECT_CONFIG });
 
 	trustFile(projectFile, content);
 	const keysBefore = Object.fromEntries(KEY_MODES.map((m) => [m, { ...config.keys[m] }]));
