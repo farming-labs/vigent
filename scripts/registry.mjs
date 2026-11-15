@@ -38,7 +38,7 @@ process.on("exit", () => fs.rmSync(process.env.XDG_CONFIG_HOME, { recursive: tru
 
 const dist = (f) => import(pathToFileURL(path.join(root, "dist", f)).href);
 const { loadConfig } = await dist("config.js");
-const { buildKeymap, leaderOrDefault, mappingRisks } = await dist("keys.js");
+const { buildKeymap, commandLineRisk, leaderOrDefault, mappingRisks } = await dist("keys.js");
 const { BUILTIN_THEMES, buildTheme, normalizeGroups, Painter } = await dist("theme.js");
 const { parseStyle } = await dist("style.js");
 const { CUSTOM_ENGINES, ENGINE_BINS, ENGINE_IDS } = await dist("engines.js");
@@ -82,18 +82,28 @@ export function shellWords(args) {
 /** A mapping in the file: [keys.<mode>] lhs, or lhs directly under [keys] (NORMAL). */
 const rawMapping = (raw, mode, lhs) => (isTable(raw.keys?.[mode]) && lhs in raw.keys[mode] ? raw.keys[mode][lhs] : raw.keys?.[lhs]);
 
+/** The steps of each command in the file, for what a line that calls one runs. */
+function stepsIn(raw) {
+	const steps = commandSteps(raw.commands);
+	return (n) => (steps[n] ? [steps[n]] : []);
+}
+
 /** The risky command lines a mapping in the file runs, read the way vigent's trust check reads them. */
 export function mappingRisksIn(raw, mode, rhs) {
-	const steps = commandSteps(raw.commands);
 	const leader = typeof raw.leader === "string" ? raw.leader : typeof raw.mapleader === "string" ? raw.mapleader : undefined;
-	return mappingRisks(mode, rhs, { leader: leaderOrDefault(leader), commands: (n) => (steps[n] ? [steps[n]] : []) });
+	return mappingRisks(mode, rhs, { leader: leaderOrDefault(leader), commands: stepsIn(raw) });
+}
+
+/** Why a step of a command in the file waits for :trust, read the way vigent's trust check reads it ("shell" for a shell step). */
+export function stepRiskIn(raw, step) {
+	return commandLineRisk(normalizeStep(step), stepsIn(raw));
 }
 
 /**
  * What a config file runs: every part vigent holds back until a project file is
- * trusted (hooks, commands with a shell step, engine commands and arguments,
- * Claude Code allow rules, mappings that run a shell command or one of those
- * commands), with the command or rule each one adds.
+ * trusted (hooks, commands with a shell step or an ex step that can run one,
+ * engine commands and arguments, Claude Code allow rules, mappings that run a
+ * shell command or one of those commands), with the command or rule each one adds.
  */
 export function runsOf(raw, gated) {
 	const out = [];
@@ -106,11 +116,11 @@ export function runsOf(raw, gated) {
 			for (const command of lines.length ? lines : [JSON.stringify(rhs)]) out.push({ from, command });
 		} else if (top === "hooks") out.push({ from, command: String(raw.hooks[id]).trim() });
 		else if (top === "commands") {
-			const c = raw.commands[id];
-			for (const step of [isTable(c) ? c.run : c].flat()) {
-				const s = normalizeStep(step);
-				if (s.startsWith("!")) out.push({ from, command: s.slice(1).trim() });
-			}
+			// each shell step (without the !), and each ex step that waits (`w! {args}`, `serve`)
+			const run = isTable(raw.commands[id]) ? raw.commands[id].run : raw.commands[id];
+			const steps = [run].flat().filter((step) => typeof step === "string");
+			const lines = steps.filter((step) => stepRiskIn(raw, step)).map((step) => normalizeStep(step).replace(/^!\s*/, ""));
+			for (const command of lines.length ? lines : [JSON.stringify(run)]) out.push({ from, command });
 		} else if (top === "engines" && key === "command") {
 			const e = raw.engines[id];
 			const prompt = e.command.slice(1).some((a) => a.includes("{prompt}")) ? [] : ["{prompt}"];
@@ -222,8 +232,12 @@ function checkCommands(raw, problems) {
 			continue;
 		}
 		if (typeof v.description !== "string" || !v.description.trim()) problems.push(`[commands.${n}] needs a description: what it does, for :command, :help and <Tab>`);
+		// a shell step, or one that writes a file or starts :serve, is listed in runs; one that defines
+		// commands or mappings, replays keys, or changes what's trusted would hide what runs
 		for (const step of [v.run].flat().filter((s) => typeof s === "string")) {
-			if (definesCommand(step) || definesMapping(step)) problems.push(`[commands.${n}]: a step can't define commands or mappings (${JSON.stringify(step)}): what runs has to be in the file`);
+			const risk = stepRiskIn(raw, step);
+			if (definesCommand(step) || definesMapping(step) || risk === "defines") problems.push(`[commands.${n}]: a step can't define commands or mappings, or replay keys (${JSON.stringify(step)}): what runs has to be in the file`);
+			else if (risk === "trust") problems.push(`[commands.${n}]: a step can't trust a project or allow Claude Code rules (${JSON.stringify(step)})`);
 		}
 	}
 	if (raw.keys === undefined) return;

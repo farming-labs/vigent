@@ -119,6 +119,40 @@ test("a keymap that runs a shell command says so; one that defines commands or m
 	assert.match(problems("q:kill<Home>!<CR>").join("\n"), /vigent can't tell what this mapping runs/);
 });
 
+test("a command entry lists a step that writes a file or starts :serve, and rejects one that replays keys or changes what's trusted", () => {
+	const check = (entry) => checkEntry("command", "x", { "entry.toml": entry, "meta.toml": META });
+	const ok = check('[commands.Save]\nrun = "w! {args}"\ndescription = "the transcript, over a file"\n[commands.Share]\nrun = ["serve local", "!echo shared"]\ndescription = "on this machine"\n[commands.Keep]\nrun = ["w", "serve stop"]\ndescription = "a new <agent>.md, and :serve off"\n[keys.normal]\n"<leader>w" = ":Save<CR>"\n"<leader>k" = ":Keep<CR>"\n');
+	assert.deepEqual(ok.problems, []);
+	assert.deepEqual(ok.entry.runs, [
+		{ from: "commands.Save", command: "w! {args}" },
+		{ from: "commands.Share", command: "serve local" },
+		{ from: "commands.Share", command: "echo shared" },
+		{ from: "keys.normal.<leader>w", command: "Save" },
+	]);
+	const problems = (step) => check(`[commands.Ship]\nrun = ${JSON.stringify(step)}\ndescription = "d"\n`).problems.join("\n");
+	for (const step of ["normal ihi", "execute 'x'", "source evil.vim", "nn x :!y<CR>", "nnoremap x :!y<CR>", "delcommand Land", "unmap x", ":norm! ihi"]) {
+		assert.match(problems(step), /\[commands.Ship\]: a step can't define commands or mappings, or replay keys/, step);
+	}
+	for (const step of ["trust", "permissions allow Bash(*)", "perm allow Bash(rm:*)"]) {
+		assert.match(problems(step), /\[commands.Ship\]: a step can't trust a project or allow Claude Code rules/, step);
+	}
+	assert.deepEqual(runsOf({ commands: { X: "nnoremap j :!y<CR>", Y: { run: ["colorscheme nord", "X"] } } }, ["commands.X", "commands.Y"]), [
+		{ from: "commands.X", command: "nnoremap j :!y<CR>" },
+		{ from: "commands.Y", command: "X" },
+	], "the step that waits (in a setup, which may define)");
+});
+
+test("a keymap that writes a file or starts :serve lists it; a bare :w and :serve stop are data", () => {
+	const check = (entry) => checkEntry("keymap", "x", { "entry.toml": entry, "meta.toml": META });
+	const r = check('[keys.normal]\n"<leader>w" = ":w! notes.md<CR>"\n"<leader>s" = ":serve<CR>"\n"<leader>W" = ":w<CR>"\n"<leader>S" = ":serve stop<CR>"\n');
+	assert.deepEqual(r.problems, []);
+	assert.deepEqual(r.entry.runs, [
+		{ from: "keys.normal.<leader>w", command: "w! notes.md" },
+		{ from: "keys.normal.<leader>s", command: "serve" },
+	]);
+	assert.deepEqual(check('[keys.normal]\n"<leader>W" = ":w<CR>"\n"<leader>S" = ":serve stop<CR>"\n').entry.runs, []);
+});
+
 test("a bad entry is rejected with every problem listed", () => {
 	const problems = (kind, name, files) => checkEntry(kind, name, files).problems;
 	assert.match(problems("plugin", "x", { "entry.toml": "", "meta.toml": META })[0], /unknown kind 'plugin'/);
