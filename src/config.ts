@@ -21,7 +21,7 @@ import * as path from "node:path";
 import { parse as parseToml } from "smol-toml";
 import { EFFORTS } from "./choices.js";
 import { parseTemplates, type Template } from "./templates.js";
-import { parseCommands, type UserCommands } from "./commands.js";
+import { type CommandInfos, parseCommands, type UserCommands } from "./commands.js";
 import { HOOK_NAMES, type HookName, type Hooks } from "./hooks.js";
 import { defaultLayout, type Layout, parseSections, STATUSLINE_PARTS, WINBAR_PARTS } from "./layout.js";
 import { parseStyle, type StyleSpec } from "./style.js";
@@ -86,6 +86,8 @@ export interface Config {
 	layout: Layout;
 	/** [commands]: your own ex commands */
 	commands: UserCommands;
+	/** what each command does (its description), and which wait for :trust */
+	commandInfo: CommandInfos;
 	/** [style]: sidebar and message layout and icons, over the theme's own */
 	style: StyleSpec;
 }
@@ -127,7 +129,7 @@ export function configPath(): string {
 
 /** Load the config file. Problems become warnings so a typo never stops vigent from starting. */
 export function loadConfig(file = configPath(), opts: LoadOptions = {}): { config: Config; warnings: string[]; gated: string[] } {
-	const config: Config = opts.base ?? { ui: { ...DEFAULT_UI }, highlights: {}, keys: {}, worktree: { ...DEFAULT_WORKTREE }, engines: {}, templates: {}, hooks: {}, layout: defaultLayout(), commands: {}, style: {} };
+	const config: Config = opts.base ?? { ui: { ...DEFAULT_UI }, highlights: {}, keys: {}, worktree: { ...DEFAULT_WORKTREE }, engines: {}, templates: {}, hooks: {}, layout: defaultLayout(), commands: {}, commandInfo: {}, style: {} };
 	const warnings: string[] = [];
 	const gated: string[] = [];
 	const where = opts.label ?? "config";
@@ -220,7 +222,7 @@ export function loadConfig(file = configPath(), opts: LoadOptions = {}): { confi
 				break;
 			}
 			case "commands":
-				config.commands = { ...config.commands, ...parseCommands(value, where, warnings, gated, mayRun) };
+				config.commands = { ...config.commands, ...parseCommands(value, where, warnings, gated, mayRun, config.commandInfo, config.commands) };
 				break;
 			case "statusline":
 				parseSections("statusline", value, STATUSLINE_PARTS, config.layout.statusline, where, warnings);

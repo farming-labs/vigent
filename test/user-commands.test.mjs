@@ -61,6 +61,95 @@ test("[commands] in config.toml: ex commands, shell commands, lists; mistakes ar
 	assert.deepEqual(Object.keys(r.config.commands).sort(), ["Land", "Review", "Test"]);
 });
 
+test("[commands.Name] tables: run and a description; the old forms keep working; mistakes are warnings", () => {
+	const f = write(
+		"tables.toml",
+		[
+			"[commands]",
+			'Test = "!npm test"',
+			"[commands.Review]",
+			'run = "new -t review {args}"',
+			'description = "review the branch with the review template"',
+			"[commands.Land]",
+			'run = ["!npm test", ":pr"]',
+			"[commands.Bare]",
+			'run = "kill"',
+			"[commands.NoRun]",
+			'description = "nothing to run"',
+			"[commands.Odd]",
+			'run = "only"',
+			"description = 3",
+			'colour = "red"',
+			"[commands.Empty]",
+			"run = []",
+			"[commands.lower]",
+			'run = "new"',
+			"",
+		].join("\n"),
+	);
+	const { config, warnings } = loadConfig(f);
+	assert.deepEqual(config.commands, { Test: ["!npm test"], Review: ["new -t review {args}"], Land: ["!npm test", "pr"], Bare: ["kill"], Odd: ["only"] });
+	assert.deepEqual(config.commandInfo, { Review: { description: "review the branch with the review template" } });
+	assert.deepEqual(warnings, [
+		`config [commands.NoRun]: 'run' is missing: an ex command ("new -t review {args}"), a shell command ("!npm test") or a list of them`,
+		"config [commands.Odd]: 'description' should be a string",
+		"config [commands.Odd]: unknown option 'colour' (run, description)",
+		`config [commands]: 'Empty' should be an ex command ("new -t review {args}"), a shell command ("!npm test") or a list of them`,
+		"config [commands]: 'lower' should start with a capital letter (letters and digits), like vim's :command",
+	]);
+
+	// a project's shell command waits for :trust, and vigent still knows it and what it does
+	const p = write("tables/.vigent.toml", `[commands.Deploy]\nrun = "!./deploy.sh"\ndescription = "ship it"\n[commands.Test]\nrun = "!evil"\n[commands.Look]\nrun = "diff"\ndescription = "the diff"\n`);
+	const r = loadConfig(p, { base: config, trusted: false, label: PROJECT_CONFIG });
+	assert.deepEqual(r.gated, ["commands.Deploy", "commands.Test"]);
+	assert.equal(r.config.commands.Deploy, undefined);
+	assert.deepEqual(r.config.commands.Test, ["!npm test"], "yours still runs");
+	assert.deepEqual(r.config.commandInfo.Deploy, { description: "ship it", waitsForTrust: true });
+	assert.equal(r.config.commandInfo.Test, undefined, "yours is the one :Test runs, so it doesn't wait");
+	assert.deepEqual(r.config.commandInfo.Look, { description: "the diff" });
+	// trusted, it runs
+	const t = loadConfig(p, { base: r.config, trusted: true, label: PROJECT_CONFIG });
+	assert.deepEqual(t.config.commands.Deploy, ["!./deploy.sh"]);
+	assert.deepEqual(t.config.commandInfo.Deploy, { description: "ship it" });
+});
+
+test(":command and :help show what your commands do", () => {
+	const { app, ex } = makeApp();
+	const overlays = [];
+	app.tui.showOverlay = (c) => {
+		overlays.push(c);
+		return { hide() {} };
+	};
+	app.commands = { Review: ["new -t review {args}"], Test: ["!npm test"] };
+	app.commandInfo = { Review: { description: "review the branch" }, Deploy: { description: "ship it", waitsForTrust: true } };
+	ex("command");
+	assert.equal(app.message, "Review = new -t review {args} · review the branch   Test = !npm test");
+	ex("command Review");
+	assert.equal(app.message, "Review = new -t review {args} · review the branch");
+	ex("command Deploy");
+	assert.equal(app.message, "Deploy runs shell commands from .vigent.toml: it waits for :trust");
+	ex("Deploy");
+	assert.equal(app.message, ":Deploy runs shell commands from .vigent.toml: it waits for :trust");
+
+	ex("help");
+	overlays[0].handleInput("G");
+	const text = overlays[0]
+		.render(76)
+		.join("\n")
+		.replace(/\x1b\[[0-9;]*m/g, "");
+	assert.match(text, /YOUR COMMANDS[\s\S]*:Review\s+review the branch[\s\S]*:Test\s+!npm test/);
+	overlays[0].handleInput("q");
+
+	// redefined or deleted, the description goes with it
+	ex("command! Review queue look");
+	assert.equal(app.commandInfo.Review, undefined);
+	ex("command Review");
+	assert.equal(app.message, "Review = queue look");
+	app.commandInfo.Test = { description: "the tests" };
+	ex("delcommand Test");
+	assert.equal(app.commandInfo.Test, undefined);
+});
+
 test("a command runs its ex command with {args} filled in", () => {
 	const { app, ex } = makeApp();
 	app.commands = { Review: ["queue review {args} carefully"], Two: ["queue one", "queue two"] };

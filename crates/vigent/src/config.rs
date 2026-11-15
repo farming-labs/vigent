@@ -220,6 +220,14 @@ pub struct StyleSpec {
     pub nerd_icons: Vec<(String, String)>,
 }
 
+/// What else vigent knows about one of your commands (src/commands.ts CommandInfo).
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct CommandInfo {
+    pub description: Option<String>,
+    /// a project's command with shell steps, before :trust (it isn't in `commands` yet)
+    pub waits_for_trust: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct Config {
     pub theme: Option<String>,
@@ -240,6 +248,8 @@ pub struct Config {
     pub layout: Layout,
     /// [commands]: name → steps
     pub commands: Vec<(String, Vec<String>)>,
+    /// what each command does (its description), and which wait for :trust
+    pub command_info: Vec<(String, CommandInfo)>,
     pub style: StyleSpec,
 }
 
@@ -367,7 +377,7 @@ pub fn load_str(text: &str, file_name: &str, opts: LoadOptions) -> Loaded {
             "engines" => parse_engines(value, w, may_run, &mut config, &mut warnings, &mut gated),
             "templates" => parse_templates(value, &mut config, &mut warnings),
             "style" => parse_style(value, w, &mut config.style, &mut warnings),
-            "commands" => parse_commands(value, w, may_run, &mut config.commands, &mut warnings, &mut gated),
+            "commands" => parse_commands(value, w, may_run, &mut config.commands, &mut config.command_info, &mut warnings, &mut gated),
             "statusline" => parse_sections("statusline", value, &STATUSLINE_PARTS, &mut config.layout.statusline, w, &mut warnings),
             "winbar" => parse_sections("winbar", value, &WINBAR_PARTS, &mut config.layout.winbar, w, &mut warnings),
             "hooks" => {
@@ -624,7 +634,7 @@ pub fn parse_style(value: &Val, w: &str, style: &mut StyleSpec, warnings: &mut V
     }
 }
 
-fn parse_commands(value: &Val, w: &str, may_run: bool, out: &mut Vec<(String, Vec<String>)>, warnings: &mut Vec<String>, gated: &mut Vec<String>) {
+fn parse_commands(value: &Val, w: &str, may_run: bool, out: &mut Vec<(String, Vec<String>)>, info: &mut Vec<(String, CommandInfo)>, warnings: &mut Vec<String>, gated: &mut Vec<String>) {
     let Some(t) = value.as_table() else {
         warnings.push(format!("{w}: [commands] should be a table, e.g. Test = \"!npm test\""));
         return;
@@ -636,9 +646,28 @@ fn parse_commands(value: &Val, w: &str, may_run: bool, out: &mut Vec<(String, Ve
             warnings.push(format!("{w} [commands]: '{name}' should start with a capital letter (letters and digits), like vim's :command"));
             continue;
         }
-        let steps = match v {
-            Val::Str(s) => Some(vec![s.clone()]),
-            _ => v.some_strings(),
+        let mut run = Some(v);
+        let mut description = None;
+        // [commands.Name]: run = ..., description = "..."
+        if let Some(table) = v.as_table() {
+            run = None;
+            for (k, x) in table {
+                match (k.as_str(), x) {
+                    ("run", _) => run = Some(x),
+                    ("description", Val::Str(d)) => description = Some(d.trim().to_string()).filter(|d| !d.is_empty()),
+                    ("description", _) => warnings.push(format!("{w} [commands.{name}]: 'description' should be a string")),
+                    _ => warnings.push(format!("{w} [commands.{name}]: unknown option '{k}' (run, description)")),
+                }
+            }
+            if run.is_none() {
+                warnings.push(format!("{w} [commands.{name}]: 'run' is missing: an ex command (\"new -t review {{args}}\"), a shell command (\"!npm test\") or a list of them"));
+                continue;
+            }
+        }
+        let steps = match run {
+            Some(Val::Str(s)) => Some(vec![s.clone()]),
+            Some(v) => v.some_strings(),
+            None => None,
         };
         let Some(steps) = steps.filter(|s| s.iter().all(|x| !normalize(x).is_empty())) else {
             warnings.push(format!("{w} [commands]: '{name}' should be an ex command (\"new -t review {{args}}\"), a shell command (\"!npm test\") or a list of them"));
@@ -646,9 +675,17 @@ fn parse_commands(value: &Val, w: &str, may_run: bool, out: &mut Vec<(String, Ve
         };
         if !may_run && steps.iter().any(|s| normalize(s).starts_with('!')) {
             gated.push(format!("commands.{name}"));
+            // it completes, and says why it doesn't run yet (unless one of yours by that name runs instead)
+            if !out.iter().any(|(n, _)| n == name) {
+                upsert(info, name, CommandInfo { description, waits_for_trust: true });
+            }
             continue;
         }
         upsert(out, name, steps.iter().map(|s| normalize(s)).collect());
+        match description {
+            Some(d) => upsert(info, name, CommandInfo { description: Some(d), waits_for_trust: false }),
+            None => info.retain(|(n, _)| n != name),
+        }
     }
 }
 
@@ -921,6 +958,60 @@ worktree = "⑂ "
         assert_eq!(l.config.theme.as_deref(), Some("nord"), "layered over yours");
         assert_eq!(l.config.engine_options("claude").unwrap().model.as_deref(), Some("opus"));
         assert_eq!(l.config.commands.len(), 1);
+    }
+
+    #[test]
+    fn command_tables_with_descriptions() {
+        let l = load(
+            r#"
+[commands]
+Test = "!npm test"
+[commands.Review]
+run = "new -t review {args}"
+description = "review the branch with the review template"
+[commands.Land]
+run = ["!npm test", ":pr"]
+[commands.NoRun]
+description = "nothing to run"
+[commands.Odd]
+run = "only"
+description = 3
+colour = "red"
+[commands.Empty]
+run = []
+[commands.lower]
+run = "new"
+"#,
+        );
+        let c = &l.config;
+        let names: Vec<&str> = c.commands.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, ["Test", "Review", "Land", "Odd"]);
+        assert_eq!(c.commands[2].1, ["!npm test", "pr"]);
+        assert_eq!(c.command_info, [("Review".to_string(), CommandInfo { description: Some("review the branch with the review template".into()), waits_for_trust: false })]);
+        assert_eq!(
+            l.warnings,
+            [
+                "config [commands.NoRun]: 'run' is missing: an ex command (\"new -t review {args}\"), a shell command (\"!npm test\") or a list of them",
+                "config [commands.Odd]: 'description' should be a string",
+                "config [commands.Odd]: unknown option 'colour' (run, description)",
+                "config [commands]: 'Empty' should be an ex command (\"new -t review {args}\"), a shell command (\"!npm test\") or a list of them",
+                "config [commands]: 'lower' should start with a capital letter (letters and digits), like vim's :command",
+            ]
+        );
+
+        // a project's shell command waits for :trust, and vigent still knows it and what it does
+        let project = "[commands.Deploy]\nrun = \"!./deploy.sh\"\ndescription = \"ship it\"\n[commands.Test]\nrun = \"!evil\"\n[commands.Look]\nrun = \"diff\"\ndescription = \"the diff\"\n";
+        let r = load_str(project, PROJECT_CONFIG, LoadOptions { base: Some(l.config.clone()), trusted: false, label: PROJECT_CONFIG });
+        assert_eq!(r.gated, ["commands.Deploy", "commands.Test"]);
+        assert!(!r.config.commands.iter().any(|(n, _)| n == "Deploy"));
+        assert_eq!(r.config.commands[0].1, ["!npm test"], "yours still runs");
+        let info = |c: &Config, n: &str| c.command_info.iter().find(|(k, _)| k == n).map(|(_, i)| i.clone());
+        assert_eq!(info(&r.config, "Deploy"), Some(CommandInfo { description: Some("ship it".into()), waits_for_trust: true }));
+        assert_eq!(info(&r.config, "Test"), None, "yours is the one :Test runs, so it doesn't wait");
+        assert_eq!(info(&r.config, "Look"), Some(CommandInfo { description: Some("the diff".into()), waits_for_trust: false }));
+        let t = load_str(project, PROJECT_CONFIG, LoadOptions { base: Some(r.config), trusted: true, label: PROJECT_CONFIG });
+        assert!(t.config.commands.iter().any(|(n, s)| n == "Deploy" && s == &["!./deploy.sh"]));
+        assert_eq!(info(&t.config, "Deploy"), Some(CommandInfo { description: Some("ship it".into()), waits_for_trust: false }));
     }
 
     #[test]

@@ -430,6 +430,7 @@ async function main(): Promise<number | undefined> {
 	app.engineOptions = config.engines;
 	app.styleConfig = config.style;
 	app.commands = config.commands;
+	app.commandInfo = config.commandInfo;
 	// :trust: let this project's .vigent.toml run its commands, from now on
 	app.trustProject = () =>
 		executeProjectTrust({

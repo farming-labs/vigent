@@ -121,6 +121,17 @@ pub fn execute_project_trust(app: &mut App) -> String {
     }
     let base = std::mem::take(&mut app.config);
     app.config = config::load_str(&content, PROJECT_CONFIG, LoadOptions { base: Some(base), trusted: true, label: PROJECT_CONFIG }).config;
+    // the commands that waited for :trust run now (alongside any you defined with :command)
+    if app.windows.commands_loaded {
+        for g in gated.iter().filter_map(|g| g.strip_prefix("commands.")) {
+            if let Some((_, steps)) = app.config.commands.iter().find(|(n, _)| n == g).cloned() {
+                match app.windows.commands.iter_mut().find(|(n, _)| n == g) {
+                    Some(e) => e.1 = steps,
+                    None => app.windows.commands.push((g.to_string(), steps)),
+                }
+            }
+        }
+    }
     crate::permissions::reload(app);
     if gated.is_empty() { format!("trusted {PROJECT_CONFIG}") } else { format!("trusted {PROJECT_CONFIG}: {} now run", gated.join(", ")) }
 }
