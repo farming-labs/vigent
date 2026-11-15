@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { after, test } from "node:test";
-import { allowRule, allowRules, CLI_ADAPTERS, CliSession, commandPrograms, describeDenial } from "../dist/cli-engines.js";
+import { allowDetails, allowRule, allowRules, CLI_ADAPTERS, CliSession, commandPrograms, describeDenial, ruleProgram } from "../dist/cli-engines.js";
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "vigent-permissions-"));
 after(() => fs.rmSync(tmp, { recursive: true, force: true }));
@@ -27,7 +27,7 @@ const done = { type: "result", subtype: "success", is_error: false, result: "ok"
  * A fake Claude Code: refused until it's run with --allowedTools, then fine.
  * Every command line goes to a log.
  */
-function fakeClaude(name) {
+function fakeClaude(name, refused = blocked) {
 	const dir = path.join(tmp, name);
 	fs.mkdirSync(dir, { recursive: true });
 	const log = path.join(dir, "argv.log");
@@ -39,7 +39,7 @@ const fs = require("fs");
 const argv = process.argv.slice(2);
 fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify(argv) + "\\n");
 const allowed = argv.includes("--allowedTools");
-for (const e of [${JSON.stringify(init)}, allowed ? ${JSON.stringify(done)} : ${JSON.stringify(blocked)}]) console.log(JSON.stringify(e));
+for (const e of [${JSON.stringify(init)}, allowed ? ${JSON.stringify(done)} : ${JSON.stringify(refused)}]) console.log(JSON.stringify(e));
 `,
 	);
 	fs.chmodSync(file, 0o755);
@@ -61,7 +61,7 @@ test("a refused call becomes a permission rule: the program for a command, the t
 	assert.equal(allowRule({ name: "Bash", input: { command: "gh pr view 12" } }), "Bash(gh:*)");
 	assert.equal(allowRule({ name: "Bash", input: { command: "  FOO=1 BAR=2 cargo test --all" } }), "Bash(cargo:*)");
 	assert.equal(allowRule({ name: "Bash", input: { command: "$(evil)" } }), "Bash(evil:*)", "what $(...) runs is a program too");
-	assert.equal(allowRule({ name: "Bash", input: { command: "   " } }), "Bash");
+	assert.equal(allowRule({ name: "Bash", input: { command: "   " } }), undefined, "no rule: a bare Bash would allow every command");
 	assert.equal(allowRule({ name: "WebFetch", input: { url: "https://x.dev" } }), "WebFetch");
 	assert.equal(describeDenial({ name: "Bash", input: { command: "gh  pr\nview 12" } }), "gh pr view 12");
 	assert.equal(describeDenial({ name: "WebFetch", input: { url: "https://x.dev" } }), "WebFetch https://x.dev");
@@ -341,4 +341,86 @@ test("AskUserQuestion and ExitPlanMode aren't permissions: the question is shown
 	assert.deepEqual(infos(p), ["Claude Code has a plan ready and wants to start on it: set Mode to something other than plan in :permissions, then tell it to go ahead"]);
 	s.dispose();
 	p.dispose();
+});
+
+const E = "\x1b";
+const BEL = "\x07";
+/** the security review's command: escapes and a title in it, and more programs than a note can show */
+const HOSTILE_COMMAND = `npm test ${E}]52;c;UEVSTQ==${BEL}${E}]0;PERMTITLE${BEL}${E}[2J && echo ok && true && ls && cat x && pwd && date && whoami && id && uname && env && printf x && python3 -c 1`;
+const HOSTILE_PROGRAMS = ["npm", "echo", "true", "ls", "cat", "pwd", "date", "whoami", "id", "uname", "env", "printf", "python3"];
+
+test("a refused command with escape sequences: shown written out, its rules computed without them", () => {
+	const d = { name: "Bash", input: { command: HOSTILE_COMMAND } };
+	assert.ok(describeDenial(d).startsWith("npm test \\x1b]52;c;UEVSTQ==\\x07\\x1b]0;PERMTITLE\\x07\\x1b[2J && echo ok"));
+	assert.doesNotMatch(describeDenial(d, Infinity), /[\x00-\x1f\x7f-\x9f]/);
+	assert.equal(describeDenial(d).length, 80, "the title stays short");
+	assert.ok(describeDenial(d, Infinity).endsWith("python3 -c 1"), "the details have all of it");
+	// an escape sequence's ; is no command boundary: no Bash(c:*) or Bash(UEVSTQ==:*)
+	assert.deepEqual(commandPrograms(HOSTILE_COMMAND), HOSTILE_PROGRAMS);
+	assert.deepEqual(describeDenial({ name: `Web${E}]0;x${BEL}Fetch`, input: { url: "https://x.dev" } }), "Web\\x1b]0;x\\x07Fetch https://x.dev");
+});
+
+test("no rule for a program a rule would read as a wildcard, nor for a bare Bash", () => {
+	for (const w of ["*", "", "?", "a*", "[ab]", "{a,b}", "x:y", "a)b", "-rf", "e\u009b"]) assert.equal(ruleProgram(w), false, JSON.stringify(w));
+	for (const w of ["gh", "./scripts/test.sh", "/usr/bin/env", "~/bin/x", "python3.12", "g++", "mcp__github__get_me"]) assert.equal(ruleProgram(w), true, w);
+	const rules = (command) => allowRules({ name: "Bash", input: { command } });
+	assert.deepEqual(rules("* -rf /"), [], "Claude Code reads Bash(*:*) as every command");
+	assert.deepEqual(rules("ls && ?? x"), [], "one program a rule can't name: none for the command");
+	assert.deepEqual(rules("$X"), [], "a program vigent can't tell");
+	assert.deepEqual(rules("ls; [ab] x"), []);
+	assert.deepEqual(allowRules({ name: "Web*", input: {} }), []);
+});
+
+test("refused with no rule that allows only it: it says so, and doesn't ask", async () => {
+	const fake = fakeClaude("wildcard", { ...blocked, permission_denials: [{ tool_name: "Bash", tool_use_id: "t1", tool_input: { command: "* -rf /" } }] });
+	const s = new CliSession("w", "claude", undefined, { cwd: tmp, bin: fake.bin, ask: true });
+	let asked = false;
+	s.approver = async () => ((asked = true), "always");
+	s.send("go");
+	await settle(s);
+	assert.equal(asked, false);
+	assert.ok(s.items.some((i) => i.kind === "info" && i.text.startsWith("no rule allows only * -rf /")), JSON.stringify(s.items));
+	s.dispose();
+});
+
+test("the permission prompt shows every rule always allow saves, and no escape reaches the screen", async () => {
+	const { App } = await import("../dist/app.js");
+	const { DEFAULT_UI } = await import("../dist/config.js");
+	const { Keymap } = await import("../dist/keys.js");
+	const { BUILTIN_THEMES, Painter } = await import("../dist/theme.js");
+	const overlays = [];
+	const tui = { requestRender() {}, showOverlay: (c) => (overlays.push(c), { hide() {} }) };
+	// a short terminal: the details don't fit, and scroll
+	const app = new App(tui, { rows: 16, columns: 80, write() {} }, new Painter(BUILTIN_THEMES.default), { ...DEFAULT_UI }, new Keymap());
+	const fake = fakeClaude("hostile", { ...blocked, permission_denials: [{ tool_name: "Bash", tool_use_id: "t1", tool_input: { command: HOSTILE_COMMAND } }] });
+	const kept = [];
+	const s = new CliSession("pr", "claude", undefined, { cwd: tmp, bin: fake.bin, ask: true, onAlwaysAllow: (r) => kept.push(...r) });
+	app.addSession(s);
+	s.send("test it");
+	while (!overlays.length) await new Promise((r) => setTimeout(r, 10));
+	const picker = overlays[0];
+	const shown = new Set();
+	let screen = "";
+	for (let i = 0; i < 20; i++) {
+		const out = picker.render(76);
+		assert.equal(out.filter((l) => /[\x00-\x1a\x1c-\x1f\x7f-\x9f]|\x1b(?!\[[0-9;]*m)/.test(l)).length, 0, "no control byte but colors");
+		screen = out.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+		for (const m of screen.matchAll(/Bash\([^)]*\)/g)) shown.add(m[0]);
+		picker.handleInput("\x05"); // Ctrl-e: one row down
+	}
+	const rules = HOSTILE_PROGRAMS.map((p) => `Bash(${p}:*)`);
+	assert.deepEqual([...shown].filter((r) => !rules.includes(r)), [], "no junk rule");
+	for (const r of rules) assert.ok(shown.has(r), `${r} shows before you choose`);
+	assert.match(screen, /Ctrl-d\/Ctrl-u scroll/);
+	picker.handleInput("j");
+	picker.handleInput("\r"); // always allow
+	await settle(s);
+	assert.deepEqual(kept, rules, "it saves what it showed");
+	s.dispose();
+});
+
+test("allowDetails: each refused call and the rules, in full", () => {
+	const d = [{ name: "Bash", input: { command: "gh pr view 12" } }];
+	assert.deepEqual(allowDetails(d, ["Bash(gh:*)"]), ["blocked: gh pr view 12", "rule: Bash(gh:*)"]);
+	assert.deepEqual(allowDetails([...d, { name: "WebFetch", input: { url: "https://x.dev" } }], ["Bash(gh:*)", "WebFetch"]), ["blocked: gh pr view 12", "blocked: WebFetch https://x.dev", "2 rules: Bash(gh:*) WebFetch"]);
 });

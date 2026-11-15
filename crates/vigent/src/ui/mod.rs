@@ -131,14 +131,15 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 
 /// Where a picker goes.
 fn picker_rect(p: &picker::Picker, area: Rect) -> (u16, Rect) {
-    let h = (p.height() as u16).min(area.height);
     match p.place {
         picker::Place::Center { width } => {
             let w = width.min(area.width.saturating_sub(4)).max(20);
+            let h = (p.height(w as usize) as u16).min(area.height);
             (w, Rect::new(area.width.saturating_sub(w) / 2, area.height.saturating_sub(h) / 2, w.min(area.width), h))
         }
         picker::Place::BottomLeft { col, offset_y, width } => {
             let w = width.min(area.width.saturating_sub(col)).max(22).min(area.width);
+            let h = (p.height(w as usize) as u16).min(area.height);
             let bottom = (area.height as i32 + offset_y as i32).max(h as i32);
             let y = (bottom - h as i32).max(0) as u16;
             let x = col.min(area.width.saturating_sub(w));

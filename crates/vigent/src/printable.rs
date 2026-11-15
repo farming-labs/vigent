@@ -136,6 +136,13 @@ pub fn file_text(line: &str) -> String {
     escape_controls(line.strip_suffix('\r').unwrap_or(line)).replace('\t', "  ")
 }
 
+/// Every escape sequence and control character gone, newlines and tabs
+/// aside: what's left of a command once nothing in it can be a terminal's
+/// (src/printable.ts withoutEscapes).
+pub fn without_escapes(text: &str) -> String {
+    strip_escapes(text).chars().filter(|&c| matches!(c, '\n' | '\t') || !(is_unsafe(c) || c == '\r')).collect()
+}
+
 /// One row: newlines, carriage returns and tabs become spaces; other cursor movers go.
 pub fn one_row(line: &str) -> String {
     if !line.chars().any(|c| (c as u32) < 0x20 || c == '\x7f') {
