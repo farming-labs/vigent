@@ -378,6 +378,21 @@ fn show_command(name: &str, steps: &[String], description: Option<&str>) -> Stri
     }
 }
 
+/// What Tab offers for your commands: (name, hint), the hint its description, "(waits for :trust)" for a project's shell command before :trust.
+pub fn command_completions(app: &App) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = commands_of(app).iter().map(|(n, _)| (n.clone(), command_info(app, n).and_then(|i| i.description.clone()).unwrap_or_default())).collect();
+    for (n, i) in &app.config.command_info {
+        if i.waits_for_trust && find_command(app, n).is_none() {
+            let hint = match &i.description {
+                Some(d) => format!("{d} (waits for :trust)"),
+                None => "(waits for :trust)".into(),
+            };
+            out.push((n.clone(), hint));
+        }
+    }
+    out
+}
+
 fn waits_for_trust(app: &App, name: &str) -> bool {
     command_info(app, name).is_some_and(|i| i.waits_for_trust)
 }
@@ -630,6 +645,24 @@ mod tests {
         a.config.command_info.push(("Test".into(), CommandInfo { description: Some("the tests".into()), waits_for_trust: false }));
         crate::commands::exec(&mut a, "delcommand Test");
         assert!(command_info(&a, "Test").is_none());
+    }
+
+    #[test]
+    fn your_commands_complete_with_descriptions_and_trust() {
+        use crate::config::CommandInfo;
+        let mut a = app();
+        a.config.commands = vec![("Review".into(), vec!["new -t review {args}".into()]), ("Look".into(), vec!["diff".into()])];
+        a.config.command_info = vec![
+            ("Review".into(), CommandInfo { description: Some("review the branch".into()), waits_for_trust: false }),
+            ("Deploy".into(), CommandInfo { description: Some("ship it".into()), waits_for_trust: true }),
+            ("Check".into(), CommandInfo { description: None, waits_for_trust: true }),
+        ];
+        assert_eq!(
+            command_completions(&a),
+            [("Review".to_string(), "review the branch".to_string()), ("Look".into(), String::new()), ("Deploy".into(), "ship it (waits for :trust)".into()), ("Check".into(), "(waits for :trust)".into())]
+        );
+        crate::commands::exec(&mut a, "command Ask colo nord");
+        assert!(command_completions(&a).iter().any(|(n, h)| n == "Ask" && h.is_empty()), "one defined with :command");
     }
 
     #[test]

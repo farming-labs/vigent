@@ -66,6 +66,8 @@ const THEME_COMMANDS = new Set(["colorscheme", "colo", "theme"]);
 export interface CompletionSources {
 	agents: string[];
 	themes: string[];
+	/** your own commands ([commands], :command), each with its hint: its description, or that it waits for :trust */
+	commands?: { name: string; hint: string }[];
 	/** what `:race --engines` offers */
 	engines?: string[];
 	/** what `:race --models` offers: exact model ids, no aliases */
@@ -82,7 +84,7 @@ export interface CompletionSources {
 export function completeCommandLine(line: string, sources: CompletionSources): { base: string; items: string[]; hints?: string[] } {
 	const m = /^(\s*)(\S*)(\s+)?([\s\S]*)$/.exec(line) ?? ["", "", "", undefined, ""];
 	const [, lead, cmd, gap, arg] = m;
-	if (gap === undefined) return { base: lead, items: EX_COMMANDS.filter((c) => c.startsWith(cmd)) };
+	if (gap === undefined) return completeName(lead, cmd, sources.commands ?? []);
 	const base = lead + cmd + gap;
 	if (cmd === "race" || cmd === "race!") {
 		const r = completeRaceArg(arg, { engines: sources.engines ?? [], models: sources.models ?? [] });
@@ -97,4 +99,12 @@ export function completeCommandLine(line: string, sources: CompletionSources): {
 	const options = AGENT_COMMANDS.has(cmd) ? sources.agents : THEME_COMMANDS.has(cmd) ? sources.themes : cmd === "wincmd" || cmd === "winc" ? WINCMD_KEYS : [];
 	const needle = arg.toLowerCase();
 	return { base, items: options.filter((o) => (AGENT_COMMANDS.has(cmd) ? o.toLowerCase().includes(needle) : o.toLowerCase().startsWith(needle))) };
+}
+
+/** A command's name: the built-ins that start with it, then yours (whatever the case: `:re` offers `Review` too), with their hints. */
+function completeName(lead: string, cmd: string, commands: { name: string; hint: string }[]): { base: string; items: string[]; hints?: string[] } {
+	const items = EX_COMMANDS.filter((c) => c.startsWith(cmd));
+	const yours = commands.filter((c) => c.name.toLowerCase().startsWith(cmd.toLowerCase())).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+	if (!yours.length) return { base: lead, items };
+	return { base: lead, items: [...items, ...yours.map((c) => c.name)], hints: [...items.map(() => ""), ...yours.map((c) => c.hint)] };
 }

@@ -51,7 +51,7 @@ import { didYouMean } from "./suggest.js";
 import { alertSequence, NOTIFY_MODES, type NotifyMode } from "./notify.js";
 import { VERSION_TEXT } from "./version.js";
 import { backendName, formatBytes, riftriBackends, type RiftriHealth, RIFTRI_INSTALL } from "./riftri.js";
-import { COMMAND_NAME, type CommandInfos, describeCommand, fillArgs, normalizeStep, showCommand, type UserCommands } from "./commands.js";
+import { COMMAND_NAME, type CommandInfos, commandCompletions, describeCommand, fillArgs, normalizeStep, showCommand, type UserCommands } from "./commands.js";
 import { defaultLayout, type Layout, type StatuslinePart, type WinbarPart } from "./layout.js";
 import { allEngineIds, defaultEngine as defaultEngineFor, ENGINE_NAMES, type EngineId, type EngineInfo, isEngineId } from "./engines.js";
 import { copyToClipboard } from "./clipboard.js";
@@ -969,7 +969,8 @@ export class App implements Component {
 		// :model <id>: every ready engine's ids, the focused agent's engine's first
 		const modelIndex = modelArg && this.loadedModels ? new Map([...this.loadedModels].filter(([e]) => e === t.engine || engines.includes(e))) : undefined;
 		const efforts = ["default", ...(EFFORTS[t.engine] ?? [])];
-		return { agents: this.sessions.map((x) => x.name), themes: listThemes(), engines, models, modelIndex, modelOwn: t.engine, efforts };
+		const commands = commandCompletions(this.commands, this.commandInfo);
+		return { agents: this.sessions.map((x) => x.name), themes: listThemes(), commands, engines, models, modelIndex, modelOwn: t.engine, efforts };
 	}
 
 	/**
@@ -997,7 +998,7 @@ export class App implements Component {
 		const w = this.wild && this.wild.shown === this.cmdBuf ? this.wild : typing ? { items: typing.items, hints: typing.hints, idx: -1 } : undefined;
 		if (!w || w.items.length < 2) return undefined;
 		const P = this.painter;
-		// a model's name beside its id (:model)
+		// a hint beside each item: a model's name (:model), what your command does
 		const cells = w.items.map((t, i) => (w.hints?.[i] ? ` ${t}  ${w.hints[i]} ` : ` ${t} `));
 		let first = 0;
 		const fits = (from: number) => cells.slice(from, w.idx + 1).reduce((n, c) => n + visibleWidth(c), 0) + 4 <= width;

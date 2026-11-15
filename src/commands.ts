@@ -108,3 +108,12 @@ export function describeCommand(steps: string[], info?: CommandInfo): string {
 export function showCommand(name: string, steps: string[], info?: CommandInfo): string {
 	return `${name} = ${steps.join(" | ")}${info?.description ? ` · ${info.description}` : ""}`;
 }
+
+/** What Tab offers for your commands: each name with its hint (its description; "(waits for :trust)" for a project's shell command before :trust). */
+export function commandCompletions(commands: UserCommands, info: CommandInfos): { name: string; hint: string }[] {
+	const out = Object.keys(commands).map((name) => ({ name, hint: info[name]?.description ?? "" }));
+	for (const [name, i] of Object.entries(info)) {
+		if (i.waitsForTrust && !commands[name]) out.push({ name, hint: [i.description, "(waits for :trust)"].filter(Boolean).join(" ") });
+	}
+	return out;
+}

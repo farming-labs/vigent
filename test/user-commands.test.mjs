@@ -5,6 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { after, test } from "node:test";
 import { App } from "../dist/app.js";
+import { commandCompletions } from "../dist/commands.js";
 import { DEFAULT_UI, loadConfig, PROJECT_CONFIG } from "../dist/config.js";
 import { Keymap } from "../dist/keys.js";
 import { Session } from "../dist/session.js";
@@ -150,6 +151,33 @@ test(":command and :help show what your commands do", () => {
 	assert.equal(app.commandInfo.Test, undefined);
 });
 
+test("<Tab> completes your commands among the built-ins, with their descriptions; a project's shell command says it waits for :trust", () => {
+	const { app, ex } = makeApp();
+	app.commands = { Review: ["new -t review {args}"], Look: ["diff"] };
+	app.commandInfo = { Review: { description: "review the branch" }, Deploy: { description: "ship it", waitsForTrust: true }, Check: { waitsForTrust: true } };
+	assert.deepEqual(commandCompletions(app.commands, app.commandInfo), [
+		{ name: "Review", hint: "review the branch" },
+		{ name: "Look", hint: "" },
+		{ name: "Deploy", hint: "ship it (waits for :trust)" },
+		{ name: "Check", hint: "(waits for :trust)" },
+	]);
+	const plain = () => app.render(120).map((l) => l.replace(/\x1b\[[0-9;]*m/g, ""));
+	for (const k of [":", "r", "e"]) app.handleInput(k);
+	assert.match(plain().at(-2), /resume\s+review\s+Review {2}review the branch/, "the wildmenu, the description beside it");
+	app.handleInput("\x1b");
+	for (const k of [":", "R", "e", "\t"]) app.handleInput(k);
+	assert.equal(app.cmdBuf, "Review");
+	app.handleInput("\x1b");
+	for (const k of [":", "D", "\t"]) app.handleInput(k);
+	assert.equal(app.cmdBuf, "Deploy");
+	app.handleInput("\x1b");
+	for (const k of [":", "D"]) app.handleInput(k);
+	assert.match(plain().at(-1), /^:Deploy/, "shown as you type");
+	app.handleInput("\x1b");
+	ex("command Ask queue x");
+	assert.ok(commandCompletions(app.commands, app.commandInfo).some((c) => c.name === "Ask"), "one defined with :command");
+});
+
 test("a command runs its ex command with {args} filled in", () => {
 	const { app, ex } = makeApp();
 	app.commands = { Review: ["queue review {args} carefully"], Two: ["queue one", "queue two"] };
@@ -230,6 +258,29 @@ test("the real vigent: a [commands] shell command from config.toml", { timeout: 
 		await t.waitFor(/:help for keys|VIGENT|██|SESSIONS/);
 		await t.type(":Hello\r");
 		await t.waitFor(/:Hello: done in [0-9.]+s · hello from shop/, 20000); // ran in the repo, with VIGENT_REPO set
+	} finally {
+		t.kill();
+	}
+});
+
+test("the real vigent: <Tab> completes your commands with their descriptions, a project's shell command waits for :trust", { timeout: 60000 }, async () => {
+	const repo = path.join(tmp, "tabbed");
+	fs.mkdirSync(repo);
+	execFileSync("git", ["init", "-q"], { cwd: repo });
+	write("xdg-tab/vigent/config.toml", `[commands.Review]\nrun = "new -t review {args}"\ndescription = "review the branch"\n`);
+	write("tabbed/.vigent.toml", `[commands.Deploy]\nrun = "!./deploy.sh"\ndescription = "ship it"\n[commands.Docs]\nrun = "help"\ndescription = "the keys"\n`);
+	const env = { ...process.env, XDG_CONFIG_HOME: path.join(tmp, "xdg-tab"), XDG_STATE_HOME: path.join(tmp, "state-tab"), TERM: "xterm-256color" };
+	const t = new Tty([], { cwd: repo, env, cols: 130, rows: 30 });
+	try {
+		await t.waitFor(/:help for keys|VIGENT|██|SESSIONS/);
+		await t.type(":re");
+		await t.waitFor(/resume\s+review\s+Review {2}review the branch/);
+		await t.type("\t\t\t");
+		await t.waitFor(/^:Review\s*$/m);
+		await t.type("\x1b:D");
+		await t.waitFor(/Deploy {2}ship it \(waits for :trust\)\s+Docs {2}the keys/);
+		await t.type("\t\r");
+		await t.waitFor(/:Deploy runs shell commands from \.vigent\.toml: it waits for :trust/);
 	} finally {
 		t.kill();
 	}
