@@ -21,14 +21,14 @@ import * as path from "node:path";
 import { parse as parseToml } from "smol-toml";
 import { EFFORTS } from "./choices.js";
 import { parseTemplates, type Template } from "./templates.js";
-import { type CommandInfos, commandSteps, parseCommands, type UserCommands } from "./commands.js";
+import { type CommandInfos, commandSteps, normalizeStep, parseCommands, runsShell, type UserCommands } from "./commands.js";
 import { HOOK_NAMES, type HookName, type Hooks } from "./hooks.js";
 import { defaultLayout, type Layout, parseSections, STATUSLINE_PARTS, WINBAR_PARTS } from "./layout.js";
 import { parseStyle, type StyleSpec } from "./style.js";
 import { ICON_SETS, type IconSet } from "./icons.js";
 import { CUSTOM_ENGINES, type CustomEngine, ENGINE_IDS, type EngineId, isEngineId, registerCustomEngine } from "./engines.js";
 import { WORKTREE_BACKENDS, type WorktreeBackend } from "./riftri.js";
-import { KEY_MODES, type KeyMode, leaderOrDefault, mappingRisks } from "./keys.js";
+import { commandLineRisk, type CommandSteps, KEY_MODES, type KeyMode, leaderOrDefault, mappingRisks } from "./keys.js";
 import { type Attr, configDir, normalizeGroups } from "./theme.js";
 import { DEFAULT_WORKTREE, type WorktreeConfig } from "./worktree.js";
 
@@ -97,8 +97,9 @@ export interface LoadOptions {
 	base?: Config;
 	/**
 	 * false: leave out what runs programs (hooks, engine args, Claude Code
-	 * permission rules, mappings that can run a shell command or define commands
-	 * or mappings) and name it in `gated`. A project file counts only once trusted.
+	 * permission rules, commands and mappings that can run a shell command,
+	 * define commands or mappings, write a file they name or start :serve) and
+	 * name it in `gated`. A project file counts only once trusted.
 	 */
 	trusted?: boolean;
 	/** how warnings name the file ("config" or ".vigent.toml") */
@@ -224,9 +225,17 @@ export function loadConfig(file = configPath(), opts: LoadOptions = {}): { confi
 				};
 				break;
 			}
-			case "commands":
-				config.commands = { ...config.commands, ...parseCommands(value, where, warnings, gated, mayRun, config.commandInfo, config.commands) };
+			case "commands": {
+				// from an untrusted file, a command waits for :trust if a step runs a shell command, or
+				// can run one: defines commands or mappings, replays keys, trusts, writes a file it
+				// names, opens :serve, or calls a command (the file's or yours) that does
+				const own = commandSteps(value);
+				const mine = config.commands;
+				const steps: CommandSteps = (n) => [own[n], mine[n]].filter((c) => c !== undefined);
+				const waits = (s: string[]) => runsShell(s) || s.some((x) => commandLineRisk(normalizeStep(x), steps) !== undefined);
+				config.commands = { ...config.commands, ...parseCommands(value, where, warnings, gated, mayRun, config.commandInfo, config.commands, waits) };
 				break;
+			}
 			case "statusline":
 				parseSections("statusline", value, STATUSLINE_PARTS, config.layout.statusline, where, warnings);
 				break;
@@ -292,7 +301,8 @@ export function loadConfig(file = configPath(), opts: LoadOptions = {}): { confi
 		}
 	}
 	// last, once the leader and [commands] are read: a project's mapping that can run a shell
-	// command, or define commands or mappings, waits for :trust like the rest
+	// command, define commands or mappings, write a file it names or start :serve waits for
+	// :trust like the rest
 	const commands = mayRun ? {} : commandSteps(raw.commands);
 	const leader = leaderOrDefault(config.leader);
 	for (const [mode, lhs, rhs] of keys) {

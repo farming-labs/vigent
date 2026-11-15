@@ -388,6 +388,71 @@ test("the trust message names a mapping that waits, and :trust maps it", () => {
 	assert.deepEqual(ran, ["touch pwned"]);
 });
 
+test("a project's command whose ex steps can run commands waits for :trust like a shell command; ex-only commands apply", () => {
+	const mine = loadConfig(write("cmdrisk-home/config.toml", `[commands]\nTest = "!npm test"\n`)).config;
+	const project = write(
+		"cmdrisk-repo/.vigent.toml",
+		[
+			"[commands]",
+			'X = "nnoremap j :!touch pwned<CR>"',
+			'Y = ["colorscheme nord", "command Z !z"]',
+			'N = "normal ihi"',
+			'E = "execute \'x\'"',
+			'S = "source evil.vim"',
+			'T = "trust"',
+			'P = "permissions allow Bash(*)"',
+			'W = "w! ~/.bashrc"',
+			'V = "serve local"',
+			'C = "Test"',
+			'D = "X"',
+			'Look = "diff"',
+			'Keep = ["colorscheme nord", "w", "serve stop", "permissions"]',
+			"[commands.Save]",
+			'run = "write {args}"',
+			'description = "the transcript, to a file"',
+			"",
+		].join("\n"),
+	);
+	const untrusted = loadConfig(project, { base: structuredClone(mine), trusted: false, label: PROJECT_CONFIG });
+	assert.deepEqual(untrusted.gated, ["X", "Y", "N", "E", "S", "T", "P", "W", "V", "C", "D", "Save"].map((n) => `commands.${n}`));
+	assert.deepEqual(Object.keys(untrusted.config.commands).sort(), ["Keep", "Look", "Test"], "ex-only commands apply, and yours");
+	assert.deepEqual(untrusted.config.commandInfo.X, { waitsForTrust: true, exOnly: true }, "it completes and says it waits");
+	assert.deepEqual(untrusted.config.commandInfo.Save, { description: "the transcript, to a file", waitsForTrust: true, exOnly: true });
+	assert.deepEqual(untrusted.warnings, []);
+	const trusted = loadConfig(project, { base: structuredClone(mine), trusted: true, label: PROJECT_CONFIG });
+	assert.deepEqual(trusted.gated, []);
+	assert.deepEqual(trusted.config.commands.X, ["nnoremap j :!touch pwned<CR>"]);
+	assert.deepEqual(trusted.config.commandInfo.Save, { description: "the transcript, to a file" });
+	// your own config.toml defines what it likes
+	assert.deepEqual(loadConfig(write("cmdrisk-home/own.toml", `[commands]\nX = "nnoremap j :!touch mine<CR>"\nV = "serve"\n`)).gated, []);
+});
+
+test("a project's command that defines a mapping waits; :trust applies it, and then the mapping runs", () => {
+	const { app } = makeApp();
+	const config = loadConfig(write("cmdtrust-home/config.toml", "")).config;
+	const projectFile = write("cmdtrust-repo/.vigent.toml", `[commands]\nX = "nnoremap j :!touch pwned<CR>"\nLook = "colorscheme nord"\n`);
+	const untrusted = loadConfig(projectFile, { base: config, trusted: false, label: PROJECT_CONFIG });
+	assert.deepEqual(untrusted.gated, ["commands.X"]);
+	app.commands = config.commands;
+	app.commandInfo = config.commandInfo;
+	const ran = [];
+	app.hookRunner = (cmd) => {
+		ran.push(cmd);
+		return Promise.resolve({ ok: true, code: 0, output: "", ms: 1 });
+	};
+	const ex = (cmd) => [":", ...cmd, "\r"].forEach((k) => app.handleInput(k));
+	ex("X");
+	assert.equal(app.message, ":X runs risky ex commands from .vigent.toml: it waits for :trust");
+	ex("command X");
+	assert.equal(app.message, "X runs risky ex commands from .vigent.toml: it waits for :trust");
+	app.handleInput("j");
+	assert.deepEqual(ran, [], "j scrolls, as built in");
+	assert.equal(executeProjectTrust({ app, config, projectFile }), "trusted .vigent.toml: commands.X now run");
+	ex("X");
+	app.handleInput("j");
+	assert.deepEqual(ran, ["touch pwned"]);
+});
+
 test("the real vigent: a project's mapping that runs a shell command waits for :trust", { timeout: 60000 }, async () => {
 	const repo = path.join(tmp, "cloned");
 	fs.mkdirSync(repo);
