@@ -52,6 +52,12 @@ export function parseRaceArgs(arg: string): RaceArgs {
 /** Engines that make their own models: a model one of them lists is theirs, even when an engine that routes to many lists it too. */
 const MAKERS = ["claude", "codex", "gemini", "cursor"];
 
+/** The engines whose model list has this id exactly (`known`: engine → ids); a maker's own when an engine that routes to many lists it too. */
+export function modelOwners(id: string, known: Map<string, string[]>): string[] {
+	const owners = [...known].filter(([, list]) => list.includes(id)).map(([e]) => e);
+	return owners.length > 1 && owners.some((e) => MAKERS.includes(e)) ? owners.filter((e) => MAKERS.includes(e)) : owners;
+}
+
 /**
  * `--models` ids to racers. Each id runs on the engine whose model list has it
  * exactly (`known`: engine → the ids and aliases it takes). `engine:model` runs
@@ -72,8 +78,7 @@ export function resolveRaceModels(
 			racers.push({ engine: id.slice(0, colon), model: id.slice(colon + 1) });
 			continue;
 		}
-		let owners = [...known].filter(([, list]) => list.includes(id)).map(([e]) => e);
-		if (owners.length > 1 && owners.some((e) => MAKERS.includes(e))) owners = owners.filter((e) => MAKERS.includes(e));
+		const owners = modelOwners(id, known);
 		if (owners.length === 0) {
 			const all = new Set([...known.values()].flat());
 			return { error: `no engine lists the model '${id}'${didYouMean(id, all)} · engine:model runs one that isn't listed` };

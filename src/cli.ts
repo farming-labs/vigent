@@ -392,7 +392,7 @@ async function main(): Promise<number | undefined> {
 
 	/** A pi agent: your pi in RPC mode; its conversation is kept in the worktree's session folder. */
 	const piModel = modelArg && (!engineArg || engineArg === "pi") ? modelArg : (config.engines.pi?.model ?? config.model ?? "default");
-	const piSession = (name: string, m: string, o: { cwd: string; worktree?: WorktreeInfo; sessionDir?: string; effort?: string; after?: Promise<unknown> }) =>
+	const piSession = (name: string, m: string, o: { cwd: string; worktree?: WorktreeInfo; sessionDir?: string; effort?: string; after?: Promise<unknown>; fresh?: boolean }) =>
 		// the same object, not a copy: a worktree made in the background fills in sessionDir before pi starts
 		new PiSession(name, m, Object.assign(o, { extraArgs: config.engines.pi?.args }));
 
@@ -449,13 +449,27 @@ async function main(): Promise<number | undefined> {
 		if (!wt) return;
 		const meta = loadAgentMeta(wt);
 		if (!meta) return;
-		const requested = s instanceof CliSession ? s.chosenModel : undefined;
-		saveAgentMeta(wt, {
+		const cli = s instanceof CliSession;
+		const requested = cli ? s.chosenModel : undefined;
+		const next: AgentMeta = {
 			...meta,
-			model: s instanceof CliSession ? (requested ?? "") : s.model,
-			...(s instanceof CliSession ? { requestedModel: requested, usage: { tokens: s.tokens, ...(s.cost !== undefined ? { cost: s.cost } : {}) } } : {}),
+			model: cli ? (requested ?? "") : s.model,
+			...(cli ? { requestedModel: requested, usage: { tokens: s.tokens, ...(s.cost !== undefined ? { cost: s.cost } : {}) } } : {}),
 			effort: s.effort,
-		});
+			// moved to another engine (:model): the conversation its next prompt still has to carry over
+			handoff: s.handoff,
+			modelName: s.modelName,
+		};
+		if (s.engine !== (meta.engine ?? "pi")) {
+			// it runs on another engine now, in a conversation of its own there
+			next.engine = s.engine;
+			next.resumeId = cli ? s.resumeId : undefined;
+			if (!cli) {
+				delete next.requestedModel;
+				delete next.usage;
+			}
+		}
+		saveAgentMeta(wt, next);
 	};
 
 	app.newSession = (name, { worktree, model: perAgent, engine = app.defaultEngine(), effort }): Session => {
@@ -510,9 +524,32 @@ async function main(): Promise<number | undefined> {
 			// the CLI keeps the conversation; vigent keeps the running totals
 			s.tokens = meta.usage?.tokens ?? 0;
 			s.cost = meta.usage?.cost;
+			s.handoff = meta.handoff;
+			s.modelName = meta.modelName;
 			return s;
 		}
-		return piSession(meta.name, meta.model, { cwd: worktree.path!, worktree, sessionDir: sessionDir(worktree.path!), effort: meta.effort });
+		// moved to pi and not prompted since: a new pi conversation, which the handoff starts
+		const s = piSession(meta.name, meta.model, { cwd: worktree.path!, worktree, sessionDir: sessionDir(worktree.path!), effort: meta.effort, fresh: Boolean(meta.handoff) });
+		s.handoff = meta.handoff;
+		s.modelName = meta.modelName;
+		return s;
+	};
+	/**
+	 * An agent moving to another engine (:model): a new session there, in the
+	 * same folder and worktree. Its old engine's conversation stays behind;
+	 * the handoff carries it over as text.
+	 */
+	app.switchSession = (s, to) => {
+		if (demo) {
+			const d = new DemoSession(s.name, to.model ?? ENGINE_NAMES[to.engine], s.worktree);
+			d.engine = to.engine;
+			return d;
+		}
+		const wt = s.worktree;
+		const cwd = (s as { cwd?: string }).cwd ?? s.worksIn?.path ?? process.cwd();
+		if (to.engine !== "pi") return cliSession(s.name, to.engine, to.model, cwd, wt, undefined, to.effort);
+		// pi starts a new conversation in the worktree's folder, not the one it may have kept from before
+		return piSession(s.name, to.model ?? "default", { cwd, worktree: wt, sessionDir: wt?.path ? sessionDir(wt.path) : undefined, effort: to.effort, fresh: true, after: s.setup });
 	};
 	/**
 	 * A split's new agent: a copy of the conversation that goes its own way.

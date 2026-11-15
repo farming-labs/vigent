@@ -31,6 +31,10 @@ export interface AgentMeta {
 	effort?: string;
 	/** what a CLI agent has used so far (pi keeps its own, in its session history) */
 	usage?: { tokens: number; cost?: number };
+	/** moved here from another engine (:model) and not prompted since: the conversation its next prompt carries over */
+	handoff?: string;
+	/** the model's readable name, from its engine's list, when it moved to it from another engine */
+	modelName?: string;
 }
 
 /** vigent's folder in git's per-worktree admin dir. */

@@ -324,15 +324,22 @@ In a project's `.vigent.toml`, a `command` is a program to run, so it waits for 
 - everything `opencode models` lists.
 - pi's: what `pi --list-models` lists (the providers you have a key or login for, and your `models.json`).
 
-An open agent keeps its engine, because its conversation lives there. So a model from another engine is used by new agents instead, and `:new <task>` starts one. `:model codex:gpt-5.5` does this without the picker.
+A model from another engine moves the open agent to that engine, in place: it keeps its name, worktree, branch, place in the sidebar and transcript, and its effort when the new engine takes that level (else the engine's default). Its old engine's session is stopped. The new engine can't read the old one's conversation, so the first prompt you send it starts with the conversation so far, as text: your prompts, the replies and a line per tool call, the most recent 40,000 characters of it (`(earlier messages left out)` says when it's cut). After that the agent carries on in its new engine's own conversation. The transcript shows `switched from claude-opus-5-5 (Claude Opus 5.5, Claude Code) to gpt-5.5 (GPT-5.5, Codex); the next prompt carries the conversation over`, and the winbar shows the new engine and model.
 
-The one exception is a pi agent when pi is no longer installed: at the next start it moves to your default engine. It starts a new conversation in the same worktree, and the pi one stays on disk.
+- While the agent is running, the move waits for its turn to end (`switches to gpt-5.5 (GPT-5.5, Codex) after this turn`); pick again before then and the last pick wins. Queued prompts and templates go to the new engine, the first one with the conversation.
+- An engine that isn't installed or signed in is refused with what `:checkhealth` says about it, and nothing changes.
+- A racer keeps its engine, so the race stays fair; `:new` starts an agent on another one. Forks and splits move like any other agent.
+- The move is saved with the agent: after a restart it reopens on the new engine, and if you hadn't sent it a prompt yet, the next one still carries the conversation over.
+
+With no agent open, a model from another engine makes that engine the one new agents run on.
+
+A pi agent when pi is no longer installed moves too, at the next start, to your default engine. It starts a new conversation in the same worktree, and the pi one stays on disk.
 
 Press `/` to filter by name or id. Enter on text that matches nothing uses the typed name as-is.
 
 `:effort` (`<Space>R`) picks the reasoning effort the same way.
 
-Both apply from the agent's next prompt, show in the winbar (`claude-fable-5 · high`), and are saved with the agent, so they survive a restart. With no agent open, they set the model and effort for new agents. Those are also in `:settings`. `:model <name>` and `:effort <level>` skip the picker.
+Both apply from the agent's next prompt, show in the winbar (`claude-fable-5 · high`), and are saved with the agent, so they survive a restart. With no agent open, they set the model and effort for new agents. Those are also in `:settings`. `:model <id>` and `:effort <level>` skip the picker, and Tab completes them: after `:model`, the exact ids of every ready engine's models that start with or contain what you typed, the focused agent's engine's first, each with its name and version beside it (`claude-opus-5-5  Claude Opus 5.5`); after `:effort`, the levels the agent's engine takes. `:model` runs an exact id on the agent's own engine when that engine lists it, else on the engine that does; anything else is tried as a model name on the agent's own engine.
 
 `claude -p` can't stop and ask before a tool runs, so with the default `acceptEdits` Claude Code may edit files in the worktree, and other tools follow the permission rules in your Claude Code settings. Use `"--permission-mode", "bypassPermissions"` only where the agent is sandboxed.
 

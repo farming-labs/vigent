@@ -71,6 +71,7 @@ import type { Session, SessionState, TranscriptItem } from "./session.js";
 import { type Attr, BUILTIN_THEMES, extractPalette, listThemes, loadTheme, type Painter, RESET, sgr, type Theme, themeFileFor, themesDir } from "./theme.js";
 import { parseHighlightCommand } from "./vimcolors.js";
 import { type CompletionSources, completeCommandLine } from "./completion.js";
+import { handoffText, type ModelIndex, type ModelPick, modelPhrase, resolveModel } from "./handoff.js";
 import { parseRaceArgs, type Race, type Racer, raceOrder, raceOver, racerLabels, resolveRaceModels } from "./race.js";
 import { HistoryWalk, LineBuffer, LineEditor, remember } from "./line-edit.js";
 import {
@@ -389,9 +390,9 @@ export class App implements Component {
 	private searchHistory: string[] = [];
 	private historyWalks = { prompt: new HistoryWalk(), command: new HistoryWalk(), search: new HistoryWalk() };
 	/** <Tab> on the command line: what's offered, which one is in, and what was typed */
-	private wild?: { base: string; items: string[]; idx: number; typed: string; after: string; shown: string };
+	private wild?: { base: string; items: string[]; hints?: string[]; idx: number; typed: string; after: string; shown: string };
 	/** what fits the command line as it's typed, kept for the text it was worked out for */
-	private typedCompletion?: { line: string; items: string[]; rest: string };
+	private typedCompletion?: { line: string; items: string[]; hints?: string[]; rest: string };
 	/** each agent's marks (m{a-z}) and jump list (<C-o>), as lines from the top of its transcript */
 	private marks = new WeakMap<Session, Map<string, number>>();
 	private jumps = new WeakMap<Session, { list: number[]; at: number }>();
@@ -532,17 +533,9 @@ export class App implements Component {
 	}
 
 	addSession(s: Session, focus = true) {
-		if ("extensionStatus" in s) (s as PiSession).uiHost = this.piUiHost(s);
-		if (s.engine === "claude" && "asksToAllow" in s) (s as CliSession).approver = (blocked, rules) => this.askToAllow(s, blocked, rules);
 		queueMicrotask(() => this.server?.sync());
 		this.sessions.push(s);
-		this.lastState.set(s, s.state);
-		s.onChange(() => {
-			this.watchState(s);
-			this.watchRace(s);
-			this.syncSpinner();
-			this.tui.requestRender();
-		});
+		this.watch(s);
 		if (focus) {
 			this.altIdx = this.focusIdx;
 			this.focusIdx = this.sessions.length - 1;
@@ -557,6 +550,23 @@ export class App implements Component {
 		}
 		this.syncSpinner();
 		this.tui.requestRender();
+	}
+
+	/** Follow an agent: its state, its race, a move to another engine waiting for its turn to end. */
+	private watch(s: Session) {
+		if ("extensionStatus" in s) (s as PiSession).uiHost = this.piUiHost(s);
+		if (s.engine === "claude" && "asksToAllow" in s) (s as CliSession).approver = (blocked, rules) => this.askToAllow(s, blocked, rules);
+		s.onHandoffSent = () => this.persist(s);
+		this.lastState.set(s, s.state);
+		s.onChange(() => {
+			if (this.moved.has(s)) return; // its new engine's session took its place
+			this.watchState(s);
+			this.watchRace(s);
+			const to = this.pendingSwitch.get(s);
+			if (to && !this.busy(s)) this.moveSession(s, to);
+			this.syncSpinner();
+			this.tui.requestRender();
+		});
 	}
 
 	/** agents that finished, failed or wait for you while you looked elsewhere */
@@ -928,12 +938,12 @@ export class App implements Component {
 		if (!w) {
 			const [before, under, rest] = this.cmd.parts;
 			const after = this.cmd.pos < [...this.cmdBuf].length ? under + rest : "";
-			const { base, items } = completeCommandLine(before, this.completionSources(before));
+			const { base, items, hints } = completeCommandLine(before, this.completionSources(before));
 			if (!items.length) {
 				this.wild = undefined;
 				return;
 			}
-			w = { base, items, idx: dir > 0 ? 0 : items.length - 1, typed: before, after, shown: "" };
+			w = { base, items, hints, idx: dir > 0 ? 0 : items.length - 1, typed: before, after, shown: "" };
 			this.wild = w;
 		} else {
 			// past the last one is what was typed, as in vim
@@ -951,25 +961,30 @@ export class App implements Component {
 		const ready = (this.engines ?? []).filter((e) => e.connected).map((e) => e.id);
 		const engines = ready.length ? ready : allEngineIds();
 		const wantsModels = /^\s*race!?\s.*(?:^|\s)(?:--models?|-m)[= ]/.test(line);
-		if (wantsModels) void this.raceModelIndex();
+		const modelArg = /^\s*(?:model|mo)\s/.test(line);
+		if (wantsModels || modelArg) void this.modelLists();
 		const aliases = new Set(CLAUDE_MODELS.map((m) => m.alias));
-		const models = wantsModels && this.loadedModels ? [...new Set(engines.flatMap((e) => this.loadedModels?.get(e) ?? []))].filter((m) => !aliases.has(m)) : [];
-		return { agents: this.sessions.map((x) => x.name), themes: listThemes(), engines, models };
+		const models = wantsModels && this.loadedModels ? [...new Set(engines.flatMap((e) => this.loadedModels?.get(e)?.map((c) => c.value) ?? []))].filter((m) => !aliases.has(m)) : [];
+		const t = this.modelTarget();
+		// :model <id>: every ready engine's ids, the focused agent's engine's first
+		const modelIndex = modelArg && this.loadedModels ? new Map([...this.loadedModels].filter(([e]) => e === t.engine || engines.includes(e))) : undefined;
+		const efforts = ["default", ...(EFFORTS[t.engine] ?? [])];
+		return { agents: this.sessions.map((x) => x.name), themes: listThemes(), engines, models, modelIndex, modelOwn: t.engine, efforts };
 	}
 
 	/**
 	 * What fits the command line while you type, before any <Tab>: every match, and the
 	 * rest of the first one (what <Tab> puts in) when it starts with what's typed.
 	 */
-	private completionAsTyped(): { items: string[]; rest: string } | undefined {
+	private completionAsTyped(): { items: string[]; hints?: string[]; rest: string } | undefined {
 		if (this.mode !== "COMMAND" || this.lineNormal || !this.cmdBuf.trim() || this.cmd.pos < [...this.cmdBuf].length) return undefined;
 		if (this.wild && this.wild.shown === this.cmdBuf) return undefined; // <Tab> is going through them
 		if (this.typedCompletion?.line !== this.cmdBuf) {
-			const { base, items } = completeCommandLine(this.cmdBuf, this.completionSources(this.cmdBuf));
+			const { base, items, hints } = completeCommandLine(this.cmdBuf, this.completionSources(this.cmdBuf));
 			const typed = this.cmdBuf.slice(base.length);
 			const first = items[0];
 			const rest = first && first.toLowerCase().startsWith(typed.toLowerCase()) ? first.slice(typed.length) : "";
-			this.typedCompletion = { line: this.cmdBuf, items, rest };
+			this.typedCompletion = { line: this.cmdBuf, items, hints, rest };
 		}
 		const c = this.typedCompletion;
 		return c.items.length ? c : undefined;
@@ -979,10 +994,11 @@ export class App implements Component {
 	private renderWildmenu(width: number): string | undefined {
 		if (this.mode !== "COMMAND") return undefined;
 		const typing = this.completionAsTyped();
-		const w = this.wild && this.wild.shown === this.cmdBuf ? this.wild : typing ? { items: typing.items, idx: -1 } : undefined;
+		const w = this.wild && this.wild.shown === this.cmdBuf ? this.wild : typing ? { items: typing.items, hints: typing.hints, idx: -1 } : undefined;
 		if (!w || w.items.length < 2) return undefined;
 		const P = this.painter;
-		const cells = w.items.map((t) => ` ${t} `);
+		// a model's name beside its id (:model)
+		const cells = w.items.map((t, i) => (w.hints?.[i] ? ` ${t}  ${w.hints[i]} ` : ` ${t} `));
 		let first = 0;
 		const fits = (from: number) => cells.slice(from, w.idx + 1).reduce((n, c) => n + visibleWidth(c), 0) + 4 <= width;
 		while (w.idx < cells.length && first < w.idx && !fits(first)) first++;
@@ -2058,12 +2074,47 @@ export class App implements Component {
 		return { engine, label: `new ${ENGINE_NAMES[engine]} agents` };
 	}
 
-	/** `:model <name>` */
+	/**
+	 * `:model <id>`. With an agent open, an exact id another engine lists
+	 * moves the agent to that engine (`switchEngine`); anything else is a
+	 * model for its own engine. With none, the model for new agents.
+	 */
 	chooseModel(model: string, t = this.modelTarget()) {
-		// a model of another engine (codex:gpt-5.5, from the picker or typed)
-		const other = /^(pi|claude|codex|opencode):(.+)$/.exec(model);
-		if (other && other[1] !== t.engine) return this.chooseOtherEngine(other[1] as EngineId, other[2], t);
-		if (other) model = other[2];
+		const s = t.session;
+		if (!s || model === "default") return this.setModel(model, t);
+		const go = (index: ModelIndex) => {
+			const ready = (e: string) => {
+				const info = this.engines?.find((x) => x.id === e);
+				return !info || info.connected || Boolean(info.checking);
+			};
+			const to = resolveModel(model, s.engine, index, ready);
+			if (to && to.engine !== s.engine && this.sessions.includes(s)) this.switchEngine(s, to);
+			else this.setModel(model, t);
+			this.tui.requestRender();
+		};
+		if (this.loadedModels) return go(this.loadedModels);
+		// which engine lists it comes from the engines' own lists, which take a moment the first time
+		this.setMessage(`looking up ${model}…`, "Comment");
+		void this.modelLists().then(go);
+	}
+
+	/** A row of the :model picker: one of the agent's own engine's models, or another engine's (`engine:model`). */
+	private pickModel(value: string, t: ReturnType<App["modelTarget"]>) {
+		const colon = value.indexOf(":");
+		const engine = value.slice(0, colon);
+		if (colon > 0 && isEngineId(engine) && engine !== t.engine) {
+			const model = value.slice(colon + 1);
+			if (!t.session) return this.chooseOtherEngine(engine, model);
+			return this.switchEngine(t.session, { engine, model, label: this.loadedModels?.get(engine)?.find((c) => c.value === model)?.label ?? this.pickedLabels.get(value) });
+		}
+		this.setModel(colon > 0 && engine === t.engine ? value.slice(colon + 1) : value, t);
+	}
+
+	/** what the :model picker last listed: each row's name */
+	private pickedLabels = new Map<string, string>();
+
+	/** A model for the agent's own engine (or new agents' engine), from the next prompt. */
+	private setModel(model: string, t: ReturnType<App["modelTarget"]>) {
 		const value = model === "default" ? undefined : model;
 		const name = value ? modelLabel(value) : "default";
 		if (!t.session) {
@@ -2073,6 +2124,8 @@ export class App implements Component {
 			return;
 		}
 		const s = t.session;
+		// the last pick wins: a move waiting for this turn to end is off
+		this.pendingSwitch.delete(s);
 		Promise.resolve(s.setModel(value))
 			.then(() => {
 				this.persist(s);
@@ -2085,27 +2138,110 @@ export class App implements Component {
 			});
 	}
 
-	/**
-	 * A model from another engine's list: new agents run on that engine with it.
-	 * An open agent stays where it is, since its conversation lives in its engine.
-	 */
-	private chooseOtherEngine(engine: EngineId, model: string, t: ReturnType<App["modelTarget"]>) {
+	/** A model from another engine's list, with no agent open: new agents run on that engine with it. */
+	private chooseOtherEngine(engine: EngineId, model: string) {
 		this.preferredEngine = engine;
 		if (model === "default") delete this.newAgentModel[engine];
 		else this.newAgentModel[engine] = model;
 		const name = model === "default" ? "the default model" : modelLabel(model);
-		const stays = t.session ? `'${t.session.name}' keeps its model (its conversation can't move) · ` : "";
-		this.setMessage(`${stays}new agents use ${name} · :new <task> starts one`, "ModeMsg");
+		this.setMessage(`new agents use ${name} · :new <task> starts one`, "ModeMsg");
 		this.repaint();
 	}
+
+	/** sessions that gave their place to one on another engine */
+	private moved = new WeakSet<Session>();
+	/** moves to another engine that wait for the agent's turn to end; the last pick wins */
+	private pendingSwitch = new WeakMap<Session, ModelPick>();
+
+	/** in the middle of something: a turn, its CLI wrapping up, a question for you, its worktree being made */
+	private busy(s: Session): boolean {
+		return s.state === "running" || s.state === "waiting" || s.finishing || Boolean(s.holdReason);
+	}
+
+	/**
+	 * Move an open agent to a model on another engine, in place: same name,
+	 * worktree, branch, place in the sidebar and transcript. Its old engine's
+	 * session goes, and the conversation goes along as text with the next
+	 * prompt. While it's busy the move waits for the turn to end.
+	 */
+	private switchEngine(s: Session, to: ModelPick) {
+		const name = ENGINE_NAMES[to.engine];
+		if (this.raceOf(s)) return this.setMessage("a racer keeps its engine; :new starts an agent on another one", "ErrorMsg");
+		const info = this.engines?.find((e) => e.id === to.engine);
+		if (info && !info.connected && !info.checking) {
+			// what :checkhealth says about it
+			const how = !info.installed && info.install ? ` · install: ${info.install}` : !info.connected && info.connect ? ` · connect: ${info.connect}` : "";
+			return this.setMessage(`can't switch to ${info.name}: ${info.detail}${how}`, "ErrorMsg");
+		}
+		if (this.busy(s)) {
+			this.pendingSwitch.set(s, to);
+			return this.setMessage(`switches to ${modelPhrase(name, to.model, to.label)} after this turn`, "ModeMsg");
+		}
+		this.moveSession(s, to);
+	}
+
+	/** The move itself: a new session on the new engine takes the old one's place. */
+	private moveSession(old: Session, to: ModelPick) {
+		this.pendingSwitch.delete(old);
+		const fromName = ENGINE_NAMES[old.engine];
+		const m = old.model;
+		const fromModel = m && m !== "default" && m !== "pi" && m !== fromName ? m : undefined;
+		const effort = old.effort && (EFFORTS[to.engine] ?? []).includes(old.effort) ? old.effort : undefined;
+		// a handoff that hasn't gone out yet still holds the whole conversation
+		const handoff = old.handoff ?? (handoffText(old.items, fromName, fromModel) || undefined);
+		let fresh: Session;
+		try {
+			fresh = this.switchSession(old, { engine: to.engine, model: to.model, effort, handoff });
+		} catch (err) {
+			return this.setMessage((err as Error).message, "ErrorMsg");
+		}
+		fresh.items = old.items;
+		fresh.tokens = old.tokens;
+		fresh.cost = old.cost;
+		fresh.queue = old.queue;
+		old.queue = [];
+		fresh.forkOf = old.forkOf;
+		fresh.handoff = handoff;
+		fresh.modelName = to.label;
+		if (old.state === "paused" && !old.holdReason) fresh.state = "paused";
+		const i = this.sessions.indexOf(old);
+		if (i >= 0) this.sessions[i] = fresh;
+		for (const w of this.windows.all()) if (w.session === old) w.session = fresh;
+		for (const x of this.sessions) if (x.forkOf === old) x.forkOf = fresh;
+		if (this.unread.delete(old)) this.unread.add(fresh);
+		const marks = this.marks.get(old);
+		if (marks) this.marks.set(fresh, marks);
+		const jumps = this.jumps.get(old);
+		if (jumps) this.jumps.set(fresh, jumps);
+		this.moved.add(old);
+		this.watch(fresh);
+		old.dispose();
+		const now = modelPhrase(ENGINE_NAMES[to.engine], to.model, to.label);
+		const fromLabel = old.modelName ?? this.loadedModels?.get(old.engine)?.find((c) => c.value === fromModel)?.label;
+		fresh.pushInfo(`switched from ${modelPhrase(fromName, fromModel, fromLabel)} to ${now}; the next prompt carries the conversation over`);
+		this.persist(fresh);
+		this.invalidate();
+		queueMicrotask(() => this.server?.sync());
+		this.setMessage(`'${fresh.name}' now runs ${now}`, "ModeMsg");
+		// prompts that waited for the turn go to the new engine, the first with the conversation
+		if (fresh.queue.length && fresh.state === "idle") fresh.setState("idle");
+		this.tui.requestRender();
+	}
+
+	/** a new session for an agent moving to another engine (set by the CLI); `handoff` is the conversation it carries */
+	switchSession: (s: Session, to: { engine: EngineId; model?: string; effort?: string; handoff?: string }) => Session = () => {
+		throw new Error("moving an agent to another engine isn't available here");
+	};
 
 	/**
 	 * What :model lists: the target engine's models first, then those of every
 	 * other engine that's ready, each under its name, as T3 Code does.
 	 */
 	private async allModelChoices(t: ReturnType<App["modelTarget"]>): Promise<PickerChoice[]> {
-		const others = (["claude", "codex", "opencode", "pi"] as EngineId[]).filter((e) => e !== t.engine && this.engines?.find((x) => x.id === e)?.connected);
+		const order = ["claude", "codex", "opencode", "pi", ...allEngineIds()].filter((e, i, all) => all.indexOf(e) === i);
+		const others = order.filter((e) => e !== t.engine && this.engines?.find((x) => x.id === e)?.connected);
 		const lists = await Promise.all([t.engine, ...others].map((e) => this.modelChoices(e).catch(() => [] as PickerChoice[])));
+		this.pickedLabels = new Map(lists.flatMap((list, k) => list.map((c) => [k === 0 ? c.value : `${others[k - 1]}:${c.value}`, c.label ?? c.value] as [string, string])));
 		// one plain list: names and ids, no engine headings
 		return lists.flatMap((list, k) => {
 			const engine = k === 0 ? t.engine : others[k - 1];
@@ -2182,7 +2318,7 @@ export class App implements Component {
 				? ((t.session as { chosenModel?: string }).chosenModel ?? "default")
 				: t.session.model
 			: (this.newAgentModel[t.engine] ?? "default");
-		this.openChoices(t.session ? `Model · '${t.session.name}'` : "Model · new agents", this.allModelChoices(t), current, true, (v) => this.chooseModel(v, t), { rows: 12 });
+		this.openChoices(t.session ? `Model · '${t.session.name}'` : "Model · new agents", this.allModelChoices(t), current, true, (v) => this.pickModel(v, t), { rows: 12 });
 	}
 
 	/** `:effort`: the reasoning effort / thinking levels the engine accepts. */
@@ -2286,17 +2422,17 @@ export class App implements Component {
 		});
 	}
 
-	/** Each engine's model ids, for `:race --models`: loaded once, the first time they're needed. */
-	private modelIndex?: Promise<Map<EngineId, string[]>>;
-	private loadedModels?: Map<EngineId, string[]>;
-	private raceModelIndex(): Promise<Map<EngineId, string[]>> {
+	/** Each engine's models with their names, for `:race --models`, `:model <id>` and Tab: loaded once, the first time they're needed. */
+	private modelIndex?: Promise<ModelIndex>;
+	private loadedModels?: ModelIndex;
+	private modelLists(): Promise<ModelIndex> {
 		const ids = allEngineIds();
 		this.modelIndex ??= Promise.all(
 			ids.map((e) =>
 				// an engine that isn't installed can't list its models; Claude Code's and Gemini CLI's lists are fixed, so they still say whose a model is
 				(this.engines?.find((x) => x.id === e)?.installed === false && e !== "claude" && e !== "gemini" ? Promise.resolve([]) : this.modelChoices(e)).then(
-					(list) => list.map((c) => c.value).filter((v) => v !== "default"),
-					() => [] as string[],
+					(list) => list.filter((c) => c.value !== "default").map((c) => ({ value: c.value, label: c.label })),
+					() => [],
 				),
 			),
 		).then((lists) => {
@@ -2307,6 +2443,11 @@ export class App implements Component {
 			return this.loadedModels;
 		});
 		return this.modelIndex;
+	}
+
+	/** Each engine's model ids (`:race --models`). */
+	private raceModelIndex(): Promise<Map<EngineId, string[]>> {
+		return this.modelLists().then((index) => new Map([...index].map(([e, list]) => [e, list.map((c) => c.value)])));
 	}
 
 	/** Start one agent per racer on the same prompt, each in its own worktree. */
@@ -4499,7 +4640,7 @@ export class App implements Component {
 			case "agent":
 				return `${this.icons.open_agent} ${s ? s.name : "[no agent]"}`;
 			case "model":
-				return s ? `${s.engine !== "pi" && s.model !== ENGINE_NAMES[s.engine] ? `${ENGINE_NAMES[s.engine]} · ` : ""}${s.model}${s.effort ? ` · ${s.effort}` : ""}` : "";
+				return s ? `${s.engine !== "pi" && s.model !== ENGINE_NAMES[s.engine] ? `${ENGINE_NAMES[s.engine]} · ` : ""}${s.model}${s.modelName && s.modelName !== s.model ? ` (${s.modelName})` : ""}${s.effort ? ` · ${s.effort}` : ""}` : "";
 			case "engine":
 				return s ? ENGINE_NAMES[s.engine] : "";
 			case "effort":

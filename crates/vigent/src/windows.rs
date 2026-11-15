@@ -424,6 +424,8 @@ pub struct SearchFrom {
 pub struct Wild {
     pub base: String,
     pub items: Vec<String>,
+    /// a hint beside each item (a model's name), "" for none
+    pub hints: Vec<String>,
     pub idx: usize,
     pub typed: String,
     pub after: String,

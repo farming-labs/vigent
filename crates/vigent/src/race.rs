@@ -86,6 +86,15 @@ pub fn parse_race_args(arg: &str) -> RaceArgs {
 /// Engines that make their own models: a model one of them lists is theirs, even when an engine that routes to many lists it too.
 const MAKERS: [&str; 4] = ["claude", "codex", "gemini", "cursor"];
 
+/// The engines whose model list has this id exactly (`known`: engine → ids); a maker's own when an engine that routes to many lists it too.
+pub fn model_owners<'a>(id: &str, known: &'a [(String, Vec<String>)]) -> Vec<&'a str> {
+    let mut owners: Vec<&str> = known.iter().filter(|(_, l)| l.iter().any(|m| m == id)).map(|(e, _)| e.as_str()).collect();
+    if owners.len() > 1 && owners.iter().any(|e| MAKERS.contains(e)) {
+        owners.retain(|e| MAKERS.contains(e));
+    }
+    owners
+}
+
 /// `--models` ids to racers: each runs on the engine whose list has it
 /// exactly; `engine:model` runs one on the engine you name. An id no list
 /// has, one in more than one list, or one whose engine isn't signed in is
@@ -100,10 +109,7 @@ pub fn resolve_race_models(ids: &[String], known: &[(String, Vec<String>)], bloc
             racers.push(Racer { engine: e.into(), model: Some(m.into()) });
             continue;
         }
-        let mut owners: Vec<&str> = known.iter().filter(|(_, l)| l.contains(id)).map(|(e, _)| e.as_str()).collect();
-        if owners.len() > 1 && owners.iter().any(|e| MAKERS.contains(e)) {
-            owners.retain(|e| MAKERS.contains(e));
-        }
+        let owners = model_owners(id, known);
         match owners[..] {
             [] => {
                 let mut all: Vec<&str> = known.iter().flat_map(|(_, l)| l.iter().map(String::as_str)).collect();
@@ -189,7 +195,7 @@ impl Race {
 
 impl App {
     /// The race an agent is in (without the racers you've killed since), or the last race.
-    fn race_of(&mut self, slot: Option<usize>) -> Option<usize> {
+    pub fn race_of(&mut self, slot: Option<usize>) -> Option<usize> {
         let open = self.open();
         for r in &mut self.agents.races {
             r.racers.retain(|i| open.contains(i));
@@ -236,38 +242,30 @@ impl App {
             self.start_race(&task, &prompt, parsed.racers);
             return;
         };
-        // which engine runs a model comes from the engines' own lists (engines::choices), off the UI thread
-        let infos = self.engines.infos.clone();
-        let env = self.engines.env.clone();
-        let tx = self.tx.clone();
+        // which engine runs a model comes from the engines' own lists (engines::choices), loaded off the UI thread the first time
         let asked = parsed.racers.unwrap_or_default();
-        std::thread::spawn(move || {
-            let known: Vec<(String, Vec<String>)> = engines::all_ids()
-                .into_iter()
-                .map(|e| {
-                    // an engine that isn't installed can't list its models; Claude Code's and Gemini CLI's lists are fixed
-                    let missing = infos.iter().find(|i| i.id == e).is_some_and(|i| !i.installed) && e != "claude" && e != "gemini";
-                    let list = if missing { vec![] } else { engines::choices::model_choices(e, &env).into_iter().map(|c| c.value).filter(|v| v != "default").collect() };
-                    (e.to_string(), list)
-                })
-                .collect();
-            let blocked = |e: &str| -> Option<String> {
-                let info = infos.iter().find(|i| i.id == e)?;
-                if info.connected || info.checking {
-                    return None;
+        engines::select::with_models(
+            self,
+            Box::new(move |app: &mut App| {
+                let known = engines::select::model_ids(app.engines.models.as_ref().expect("loaded"));
+                let infos = app.engines.infos.clone();
+                let blocked = |e: &str| -> Option<String> {
+                    let info = infos.iter().find(|i| i.id == e)?;
+                    if info.connected || info.checking {
+                        return None;
+                    }
+                    Some(format!("{}, which isn't {}", info.name, if info.installed { "signed in" } else { "installed" }))
+                };
+                match resolve_race_models(&models, &known, &blocked) {
+                    Err(e) => app.say(e, "ErrorMsg"),
+                    Ok(more) => {
+                        let mut all = asked;
+                        all.extend(more);
+                        app.start_race(&task, &prompt, Some(all));
+                    }
                 }
-                Some(format!("{}, which isn't {}", info.name, if info.installed { "signed in" } else { "installed" }))
-            };
-            let r = resolve_race_models(&models, &known, &blocked);
-            let _ = tx.send(crate::app::Msg::Run(Box::new(move |app: &mut App| match r {
-                Err(e) => app.say(e, "ErrorMsg"),
-                Ok(more) => {
-                    let mut all = asked;
-                    all.extend(more);
-                    app.start_race(&task, &prompt, Some(all));
-                }
-            })));
-        });
+            }),
+        );
     }
 
     /// Start one agent per racer on the same prompt, each in its own worktree.

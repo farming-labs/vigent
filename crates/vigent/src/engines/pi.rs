@@ -27,8 +27,8 @@ use crate::session::{Item, State};
 /// What to do when pi isn't there at all.
 pub const PI_MISSING_HINT: &str = "this agent runs on pi, which isn't installed. Install pi and send again, or press Esc and type :new <task> to start an agent on your default engine (:engine picks it, e.g. Claude Code or Codex); :kill removes this one.";
 
-/// What to do when pi can't get through: this agent stays on pi, so start one elsewhere.
-pub const PI_KEY_HINT: &str = "this agent runs on pi, and pi has no working API key. Agents keep the engine they started on: press Esc and type :new <task> to start one on the default engine (:engine picks it, e.g. Claude Code or Codex with your existing login); :kill removes this one.";
+/// What to do when pi can't get through: move this agent to another engine, or start one there.
+pub const PI_KEY_HINT: &str = "this agent runs on pi, and pi has no working API key. :model <id> moves it to a model on another engine (e.g. Claude Code or Codex with your existing login), its conversation with it; or press Esc and type :new <task> to start one on the default engine (:engine picks it); :kill removes this one.";
 
 /// A response's callback: Ok(data) or Err(why).
 type Cb = Box<dyn FnOnce(&mut App, usize, Result<Value, String>) + Send>;
@@ -115,7 +115,11 @@ fn start(app: &mut App, i: usize) -> Result<(), String> {
     let dir = if s.made.is_some() { session_dir(&s.path) } else { None };
     let extra = app.config.engine_options("pi").and_then(|o| o.args.clone()).unwrap_or_default();
     let model = s.requested_model.clone().or_else(|| s.model.clone());
-    let a = args(model.as_deref(), s.effort.as_deref(), dir.as_deref(), &extra);
+    let mut a = args(model.as_deref(), s.effort.as_deref(), dir.as_deref(), &extra);
+    if s.pi_fresh {
+        // moved here from another engine: a new conversation, not the one pi may have kept from before
+        a.retain(|x| x != "--continue");
+    }
     let mut cmd = Command::new(super::bin("pi"));
     cmd.args(&a).current_dir(&s.path).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = match cmd.spawn() {
@@ -347,11 +351,16 @@ pub fn send(app: &mut App, i: usize, text: String) {
             if let Some(p) = app.sessions[i].pi.as_mut() {
                 p.run_started = false;
             }
+            // the first prompt after a move from another engine carries the conversation so far
+            let s = &mut app.sessions[i];
+            let message = format!("{}{text}", s.take_handoff());
+            // pi keeps this conversation now: a pi started again continues it
+            s.pi_fresh = false;
             // pi reports agent_end a moment before it's idle: a prompt sent right then queues instead of failing
             request(
                 app,
                 i,
-                json!({"type": "prompt", "message": text, "streamingBehavior": "followUp"}),
+                json!({"type": "prompt", "message": message, "streamingBehavior": "followUp"}),
                 Box::new(|app, i, r| {
                     if let Err(e) = r {
                         return send_failed(app, i, e);
@@ -688,6 +697,7 @@ pub fn set_model(app: &mut App, i: usize, model: Option<String>, done: Box<dyn F
                     Box::new(move |app, i, r| match r {
                         Ok(_) => {
                             let m = format!("{provider}/{id}");
+                            app.sessions[i].model_name = None;
                             app.sessions[i].model = Some(m.clone());
                             app.sessions[i].requested_model = Some(m);
                             done(app, Ok(()));

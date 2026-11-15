@@ -201,7 +201,29 @@ export abstract class Session {
 	/** Use this model from the next prompt on. */
 	setModel(model: string | undefined): void | Promise<void> {
 		if (model) this.model = model;
+		this.modelName = undefined;
 		this.emit();
+	}
+
+	/** the model's readable name, from its engine's list (set when the agent moved to it from another engine) */
+	modelName?: string;
+
+	/**
+	 * The conversation so far, from the engine this agent ran on before
+	 * (`:model` with another engine's model): the next prompt that goes out
+	 * starts with it, once.
+	 */
+	handoff?: string;
+	/** the handoff went out (the app saves the agent's record without it) */
+	onHandoffSent?: () => void;
+
+	/** What goes before the prompt going out now: the handoff, the first time. */
+	takeHandoff(): string {
+		const h = this.handoff ?? "";
+		if (!h) return "";
+		this.handoff = undefined;
+		this.onHandoffSent?.();
+		return h;
 	}
 
 	/** Use this reasoning effort (thinking level) from the next prompt on. */
@@ -363,13 +385,13 @@ export function usageTokens(u: any): number {
 	return u.totalTokens ?? (u.input ?? 0) + (u.output ?? 0) + (u.cacheRead ?? 0) + (u.cacheWrite ?? 0);
 }
 
-/** What to do when pi can't get through: this agent stays on pi, so start one elsewhere. */
+/** What to do when pi can't get through: move this agent to another engine, or start one there. */
 /** What to do when pi isn't there at all (an agent started on pi before vigent stopped bundling it, say). */
 export const PI_MISSING_HINT =
 	"this agent runs on pi, which isn't installed. Install pi and send again, or press Esc and type :new <task> to start an agent on your default engine (:engine picks it, e.g. Claude Code or Codex); :kill removes this one.";
 
 export const PI_KEY_HINT =
-	"this agent runs on pi, and pi has no working API key. Agents keep the engine they started on: press Esc and type :new <task> to start one on the default engine (:engine picks it, e.g. Claude Code or Codex with your existing login); :kill removes this one.";
+	"this agent runs on pi, and pi has no working API key. :model <id> moves it to a model on another engine (e.g. Claude Code or Codex with your existing login), its conversation with it; or press Esc and type :new <task> to start one on the default engine (:engine picks it); :kill removes this one.";
 
 /**
  * The error of a reply whose request failed (pi ends it with stopReason
