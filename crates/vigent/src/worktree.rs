@@ -58,6 +58,111 @@ pub fn worktrees_dir(root: &Path, cfg: &WorktreeConfig) -> PathBuf {
     normalize(&root.join(cfg.dir.replace("{repo}", &name)))
 }
 
+/// Why an untrusted project's [worktree] dir can't be used, or None. It has to name a folder
+/// inside the one the repository is in (`../{repo}-worktrees`, `wt`), with no dot-folders on
+/// the way, so a repository can't check itself out into ~/.config, ~/.vim or ~/.ssh. Read from
+/// the text alone; the folder on disk is checked again (symlinks included) when a worktree is
+/// made (src/worktree.ts projectWorktreeDirProblem).
+pub fn project_worktree_dir_problem(dir: &str) -> Option<String> {
+    let b = dir.as_bytes();
+    let drive = b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':';
+    if dir.starts_with('/') || dir.starts_with('\\') || drive {
+        return Some("is an absolute path".into());
+    }
+    let parts: Vec<&str> = dir.split(['/', '\\']).filter(|p| !p.is_empty() && *p != ".").collect();
+    let rest = if parts.first() == Some(&"..") { &parts[1..] } else { &parts[..] };
+    if rest.is_empty() {
+        return Some("isn't a folder inside the one the repository is in".into());
+    }
+    for p in rest {
+        if *p == ".." {
+            return Some("goes outside the folder the repository is in".into());
+        }
+        if p.starts_with('.') {
+            return Some(format!("is in a dot-folder ({p})"));
+        }
+    }
+    None
+}
+
+/// A path with every symlink resolved, for the part that exists; None when a symlink on the way is broken.
+fn resolve_existing(p: &Path) -> Option<PathBuf> {
+    let start = normalize(&std::env::current_dir().unwrap_or_default().join(p));
+    let mut cur = start.clone();
+    let mut rest: Vec<std::ffi::OsString> = vec![];
+    loop {
+        if let Ok(real) = std::fs::canonicalize(&cur) {
+            let mut out = real;
+            for r in rest.iter().rev() {
+                out.push(r);
+            }
+            return Some(out);
+        }
+        // not there yet, unless it's a symlink to nowhere
+        if std::fs::symlink_metadata(&cur).is_ok() {
+            return None;
+        }
+        match (cur.parent(), cur.file_name()) {
+            (Some(up), Some(name)) => {
+                rest.push(name.to_os_string());
+                cur = up.to_path_buf();
+            }
+            _ => return Some(start),
+        }
+    }
+}
+
+fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).filter(|h| !h.is_empty()).map(PathBuf::from)
+}
+
+/// Why agent worktrees can't go in `dir` (worktrees_dir), or None. Symlinks are resolved first.
+/// Never your home folder (or one that holds it), and never inside a dot-folder outside the
+/// repository (~/.config/nvim/plugin, ~/.vim, ~/.ssh: editors and shells load what's there),
+/// apart from those the repository itself is in. A dir from an untrusted .vigent.toml must also
+/// stay inside the folder the repository is in, with no dot-folder at all (src/worktree.ts
+/// worktreesDirProblem).
+pub fn worktrees_dir_problem(root: &Path, dir: &Path, from_project: bool) -> Option<String> {
+    let repo = resolve_existing(root).unwrap_or_else(|| root.to_path_buf());
+    let Some(target) = resolve_existing(dir) else { return Some("goes through a broken symlink".into()) };
+    if let Some(home) = home_dir() {
+        let home = resolve_existing(&home).unwrap_or(home);
+        if home.parent().is_some() && home.starts_with(&target) {
+            return Some(if target == home { "is your home folder" } else { "holds your home folder" }.into());
+        }
+    }
+    let parent = repo.parent().map(Path::to_path_buf).unwrap_or_else(|| repo.clone());
+    if from_project && (target == parent || !target.starts_with(&parent)) {
+        return Some("is outside the folder the repository is in".into());
+    }
+    // from where the repository's own path and the target's part
+    let mut from = parent;
+    if !from_project {
+        // inside the repository (dir = ".agents") is yours to pick; it's kept out of git status
+        if target.starts_with(&repo) {
+            return None;
+        }
+        from = repo.clone();
+        while !target.starts_with(&from) {
+            match from.parent() {
+                Some(up) => from = up.to_path_buf(),
+                None => break,
+            }
+        }
+    }
+    let name = repo.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    for seg in target.strip_prefix(&from).map(|r| r.components().map(|c| c.as_os_str().to_string_lossy().to_string()).collect::<Vec<_>>()).unwrap_or_default() {
+        // the repository's own folder, and folders named after it (../.dotfiles-worktrees)
+        if seg == name || seg.starts_with(&format!("{name}-")) || seg.starts_with(&format!("{name}_")) {
+            continue;
+        }
+        if seg.starts_with('.') {
+            return Some(format!("is in a dot-folder ({seg})"));
+        }
+    }
+    None
+}
+
 /// `a/b/../c` -> `a/c`, without touching the disk (path.resolve).
 pub fn normalize(p: &Path) -> PathBuf {
     let mut out = PathBuf::new();
@@ -102,12 +207,17 @@ pub fn plan(root: &Path, agent: &str, cfg: &WorktreeConfig) -> Result<Planned, S
         return Err(format!("'{wanted}' is not a valid branch name (check [worktree] branch)"));
     }
     let dir = worktrees_dir(root, cfg);
+    if let Some(problem) = worktrees_dir_problem(root, &dir, cfg.dir_from_project) {
+        let file = if cfg.dir_from_project { " in .vigent.toml" } else { "" };
+        return Err(format!("won't put worktrees in {}: it {problem} (check [worktree] dir{file})", dir.display()));
+    }
     let exists = |b: &str| git_ok(&["show-ref", "--verify", "--quiet", &format!("refs/heads/{b}")], root);
     let mut planned = PLANNED.lock().unwrap_or_else(|e| e.into_inner());
     let mut branch = wanted.clone();
     let mut path = dir.join(wanted.replace('/', "-"));
     let mut n = 2;
-    while planned.contains(&path) || exists(&branch) || path.exists() {
+    // a symlink to nowhere counts as taken: git would write through it
+    while planned.contains(&path) || exists(&branch) || std::fs::symlink_metadata(&path).is_ok() {
         branch = format!("{wanted}-{n}");
         path = dir.join(branch.replace('/', "-"));
         n += 1;
