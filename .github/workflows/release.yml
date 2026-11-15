@@ -1,8 +1,9 @@
 # Publish vigent to npm.
 #
 # Runs on a version tag (v0.1.0, matching package.json) or by hand from the
-# Actions tab. Needs the repository secret NPM_TOKEN: an npm token that can
-# publish the `vigent` package.
+# Actions tab. Publishes with npm trusted publishing: npm trusts this workflow
+# file (farming-labs/vigent, release.yml) through GitHub's OIDC token, so
+# there's no npm token to store or rotate, and npm adds provenance itself.
 name: Release
 
 on:
@@ -12,6 +13,7 @@ on:
 
 permissions:
   contents: read
+  id-token: write # the OIDC token npm trusted publishing exchanges
 
 concurrency:
   group: npm-release
@@ -29,6 +31,10 @@ jobs:
         with:
           node-version: 22
           registry-url: https://registry.npmjs.org
+
+      # trusted publishing needs npm 11.5.1 or later; Node 22 ships npm 10
+      - name: npm with trusted publishing
+        run: npm install -g npm@^11.5.1
 
       - name: Install
         run: npm ci
@@ -62,11 +68,11 @@ jobs:
 
       - name: Publish
         if: steps.version.outputs.publish == 'true'
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
-          test -n "$NODE_AUTH_TOKEN" || { echo "add the NPM_TOKEN repository secret first" >&2; exit 1; }
-          npm publish --access public
+          npm publish --access public || {
+            echo "::error::npm refused the publish. Check that ${{ steps.version.outputs.name }} on npmjs.com lists a trusted publisher for GitHub Actions: farming-labs/vigent, workflow release.yml"
+            exit 1
+          }
           npm view "${{ steps.version.outputs.name }}@${{ steps.version.outputs.version }}" version

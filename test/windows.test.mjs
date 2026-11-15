@@ -34,7 +34,8 @@ const stubFork = (s) => {
 
 function makeApp(names = ["alpha", "beta", "gamma"], { rows = 40, columns = 140, lines = 3 } = {}) {
 	const tui = { requestRender() {}, showOverlay: () => ({ hide() {} }) };
-	const app = new App(tui, { rows, columns, write() {} }, new Painter(BUILTIN_THEMES.default), { ...DEFAULT_UI, timeoutlen: 30 }, new Keymap());
+	// 24-bit color whichever terminal runs the tests: DEFAULT_UI turns it off in macOS Terminal, and the bar colors are read back as RGB
+	const app = new App(tui, { rows, columns, write() {} }, new Painter(BUILTIN_THEMES.default), { ...DEFAULT_UI, termguicolors: true, timeoutlen: 30 }, new Keymap());
 	let quits = 0;
 	app.onQuit = () => quits++;
 	app.forkSession = stubFork;
