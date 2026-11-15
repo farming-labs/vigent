@@ -5,6 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { after, test } from "node:test";
 import { App } from "../dist/app.js";
+import { commandCompletions } from "../dist/commands.js";
 import { DEFAULT_UI, loadConfig, PROJECT_CONFIG } from "../dist/config.js";
 import { Keymap } from "../dist/keys.js";
 import { Session } from "../dist/session.js";
@@ -59,6 +60,122 @@ test("[commands] in config.toml: ex commands, shell commands, lists; mistakes ar
 	const r = loadConfig(p, { base: config, trusted: false, label: PROJECT_CONFIG });
 	assert.deepEqual(r.gated, ["commands.Deploy", "commands.Ship"]);
 	assert.deepEqual(Object.keys(r.config.commands).sort(), ["Land", "Review", "Test"]);
+});
+
+test("[commands.Name] tables: run and a description; the old forms keep working; mistakes are warnings", () => {
+	const f = write(
+		"tables.toml",
+		[
+			"[commands]",
+			'Test = "!npm test"',
+			"[commands.Review]",
+			'run = "new -t review {args}"',
+			'description = "review the branch with the review template"',
+			"[commands.Land]",
+			'run = ["!npm test", ":pr"]',
+			"[commands.Bare]",
+			'run = "kill"',
+			"[commands.NoRun]",
+			'description = "nothing to run"',
+			"[commands.Odd]",
+			'run = "only"',
+			"description = 3",
+			'colour = "red"',
+			"[commands.Empty]",
+			"run = []",
+			"[commands.lower]",
+			'run = "new"',
+			"",
+		].join("\n"),
+	);
+	const { config, warnings } = loadConfig(f);
+	assert.deepEqual(config.commands, { Test: ["!npm test"], Review: ["new -t review {args}"], Land: ["!npm test", "pr"], Bare: ["kill"], Odd: ["only"] });
+	assert.deepEqual(config.commandInfo, { Review: { description: "review the branch with the review template" } });
+	assert.deepEqual(warnings, [
+		`config [commands.NoRun]: 'run' is missing: an ex command ("new -t review {args}"), a shell command ("!npm test") or a list of them`,
+		"config [commands.Odd]: 'description' should be a string",
+		"config [commands.Odd]: unknown option 'colour' (run, description)",
+		`config [commands]: 'Empty' should be an ex command ("new -t review {args}"), a shell command ("!npm test") or a list of them`,
+		"config [commands]: 'lower' should start with a capital letter (letters and digits), like vim's :command",
+	]);
+
+	// a project's shell command waits for :trust, and vigent still knows it and what it does
+	const p = write("tables/.vigent.toml", `[commands.Deploy]\nrun = "!./deploy.sh"\ndescription = "ship it"\n[commands.Test]\nrun = "!evil"\n[commands.Look]\nrun = "diff"\ndescription = "the diff"\n`);
+	const r = loadConfig(p, { base: config, trusted: false, label: PROJECT_CONFIG });
+	assert.deepEqual(r.gated, ["commands.Deploy", "commands.Test"]);
+	assert.equal(r.config.commands.Deploy, undefined);
+	assert.deepEqual(r.config.commands.Test, ["!npm test"], "yours still runs");
+	assert.deepEqual(r.config.commandInfo.Deploy, { description: "ship it", waitsForTrust: true });
+	assert.equal(r.config.commandInfo.Test, undefined, "yours is the one :Test runs, so it doesn't wait");
+	assert.deepEqual(r.config.commandInfo.Look, { description: "the diff" });
+	// trusted, it runs
+	const t = loadConfig(p, { base: r.config, trusted: true, label: PROJECT_CONFIG });
+	assert.deepEqual(t.config.commands.Deploy, ["!./deploy.sh"]);
+	assert.deepEqual(t.config.commandInfo.Deploy, { description: "ship it" });
+});
+
+test(":command and :help show what your commands do", () => {
+	const { app, ex } = makeApp();
+	const overlays = [];
+	app.tui.showOverlay = (c) => {
+		overlays.push(c);
+		return { hide() {} };
+	};
+	app.commands = { Review: ["new -t review {args}"], Test: ["!npm test"] };
+	app.commandInfo = { Review: { description: "review the branch" }, Deploy: { description: "ship it", waitsForTrust: true } };
+	ex("command");
+	assert.equal(app.message, "Review = new -t review {args} · review the branch   Test = !npm test");
+	ex("command Review");
+	assert.equal(app.message, "Review = new -t review {args} · review the branch");
+	ex("command Deploy");
+	assert.equal(app.message, "Deploy runs shell commands from .vigent.toml: it waits for :trust");
+	ex("Deploy");
+	assert.equal(app.message, ":Deploy runs shell commands from .vigent.toml: it waits for :trust");
+
+	ex("help");
+	overlays[0].handleInput("G");
+	const text = overlays[0]
+		.render(76)
+		.join("\n")
+		.replace(/\x1b\[[0-9;]*m/g, "");
+	assert.match(text, /YOUR COMMANDS[\s\S]*:Review\s+review the branch[\s\S]*:Test\s+!npm test/);
+	overlays[0].handleInput("q");
+
+	// redefined or deleted, the description goes with it
+	ex("command! Review queue look");
+	assert.equal(app.commandInfo.Review, undefined);
+	ex("command Review");
+	assert.equal(app.message, "Review = queue look");
+	app.commandInfo.Test = { description: "the tests" };
+	ex("delcommand Test");
+	assert.equal(app.commandInfo.Test, undefined);
+});
+
+test("<Tab> completes your commands among the built-ins, with their descriptions; a project's shell command says it waits for :trust", () => {
+	const { app, ex } = makeApp();
+	app.commands = { Review: ["new -t review {args}"], Look: ["diff"] };
+	app.commandInfo = { Review: { description: "review the branch" }, Deploy: { description: "ship it", waitsForTrust: true }, Check: { waitsForTrust: true } };
+	assert.deepEqual(commandCompletions(app.commands, app.commandInfo), [
+		{ name: "Review", hint: "review the branch" },
+		{ name: "Look", hint: "" },
+		{ name: "Deploy", hint: "ship it (waits for :trust)" },
+		{ name: "Check", hint: "(waits for :trust)" },
+	]);
+	const plain = () => app.render(120).map((l) => l.replace(/\x1b\[[0-9;]*m/g, ""));
+	for (const k of [":", "r", "e"]) app.handleInput(k);
+	assert.match(plain().at(-2), /resume\s+review\s+Review {2}review the branch/, "the wildmenu, the description beside it");
+	app.handleInput("\x1b");
+	for (const k of [":", "R", "e", "\t"]) app.handleInput(k);
+	assert.equal(app.cmdBuf, "Review");
+	app.handleInput("\x1b");
+	for (const k of [":", "D", "\t"]) app.handleInput(k);
+	assert.equal(app.cmdBuf, "Deploy");
+	app.handleInput("\x1b");
+	for (const k of [":", "D"]) app.handleInput(k);
+	assert.match(plain().at(-1), /^:Deploy/, "shown as you type");
+	app.handleInput("\x1b");
+	ex("command Ask queue x");
+	assert.ok(commandCompletions(app.commands, app.commandInfo).some((c) => c.name === "Ask"), "one defined with :command");
 });
 
 test("a command runs its ex command with {args} filled in", () => {
@@ -141,6 +258,29 @@ test("the real vigent: a [commands] shell command from config.toml", { timeout: 
 		await t.waitFor(/:help for keys|VIGENT|██|SESSIONS/);
 		await t.type(":Hello\r");
 		await t.waitFor(/:Hello: done in [0-9.]+s · hello from shop/, 20000); // ran in the repo, with VIGENT_REPO set
+	} finally {
+		t.kill();
+	}
+});
+
+test("the real vigent: <Tab> completes your commands with their descriptions, a project's shell command waits for :trust", { timeout: 60000 }, async () => {
+	const repo = path.join(tmp, "tabbed");
+	fs.mkdirSync(repo);
+	execFileSync("git", ["init", "-q"], { cwd: repo });
+	write("xdg-tab/vigent/config.toml", `[commands.Review]\nrun = "new -t review {args}"\ndescription = "review the branch"\n`);
+	write("tabbed/.vigent.toml", `[commands.Deploy]\nrun = "!./deploy.sh"\ndescription = "ship it"\n[commands.Docs]\nrun = "help"\ndescription = "the keys"\n`);
+	const env = { ...process.env, XDG_CONFIG_HOME: path.join(tmp, "xdg-tab"), XDG_STATE_HOME: path.join(tmp, "state-tab"), TERM: "xterm-256color" };
+	const t = new Tty([], { cwd: repo, env, cols: 130, rows: 30 });
+	try {
+		await t.waitFor(/:help for keys|VIGENT|██|SESSIONS/);
+		await t.type(":re");
+		await t.waitFor(/resume\s+review\s+Review {2}review the branch/);
+		await t.type("\t\t\t");
+		await t.waitFor(/^:Review\s*$/m);
+		await t.type("\x1b:D");
+		await t.waitFor(/Deploy {2}ship it \(waits for :trust\)\s+Docs {2}the keys/);
+		await t.type("\t\r");
+		await t.waitFor(/:Deploy runs shell commands from \.vigent\.toml: it waits for :trust/);
 	} finally {
 		t.kill();
 	}

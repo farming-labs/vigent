@@ -45,12 +45,12 @@ const index = JSON.parse(fs.readFileSync(INDEX, "utf8"));
 test("--list shows every entry by kind, or one kind", () => {
 	const r = vigent(["add", "--list"]);
 	assert.equal(r.code, 0, r.err);
-	for (const k of ["themes", "templates", "keymaps", "engines", "setups"]) assert.match(r.out, new RegExp(`^${k}$`, "m"));
+	for (const k of ["themes", "templates", "keymaps", "commands", "engines", "setups"]) assert.match(r.out, new RegExp(`^${k}$`, "m"));
 	for (const e of index.entries) assert.match(r.out, new RegExp(`^  ${e.name} +${e.description.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "m"));
 	const engines = vigent(["add", "--list", "engines"]);
 	assert.match(engines.out, /^engines\n {2}aider +/);
 	assert.doesNotMatch(engines.out, /themes|harbor/);
-	assert.match(vigent(["add", "--list", "plugins"]).err, /unknown kind 'plugins' \(theme, template, keymap, engine, setup\)/);
+	assert.match(vigent(["add", "--list", "plugins"]).err, /unknown kind 'plugins' \(theme, template, keymap, command, engine, setup\)/);
 });
 
 test("search finds entries with every word", () => {
@@ -169,6 +169,68 @@ test("a keymap's mappings go into the [keys.normal] that's there; one you mapped
 	assert.match(forced, /^# my keys\n\[keys\]\n\n/);
 	assert.doesNotMatch(forced, /:new auth/);
 	assert.match(forced, /"<leader>an" = ":new "/);
+});
+
+test("a command entry: shows its shell steps and asks, merges into config.toml, and refuses a command or key you have", () => {
+	const h = home();
+	assert.equal(vigent(["config", "init"], { env: h.env }).code, 0);
+	const file = path.join(h.config, "config.toml");
+	const before = fs.readFileSync(file, "utf8");
+	const land = index.entries.find((e) => e.name === "land");
+	const no = vigent(["add", "land"], { env: h.env, input: "n\n" });
+	assert.equal(no.code, 1);
+	assert.match(no.out, /^command\/land by vigent \(MIT\)\n/);
+	assert.ok(no.out.includes(`It adds to ${file}:\n\n    # :Land runs the project's tests`), no.out);
+	assert.match(no.out, /It runs:\n {4}\$ if \[ -f Cargo\.toml \]; then cargo test;.* npm test; fi {4}# commands\.Land\n/);
+	assert.match(no.out, /Add it\? \[y\/N\] \nnothing added\n$/);
+	assert.equal(fs.readFileSync(file, "utf8"), before, "nothing written");
+
+	const yes = vigent(["add", "land"], { env: h.env, input: "y\n" });
+	assert.equal(yes.code, 0, yes.err);
+	assert.ok(yes.out.includes(`added [commands.Land], [keys.normal] "<leader>L" to ${file}\nuse it with :Land (vigent reads it when it starts; :command lists it)`), yes.out);
+	const after = fs.readFileSync(file, "utf8");
+	assert.ok(after.startsWith(before.slice(0, before.indexOf("[keys.normal]"))), "what was there stays");
+	assert.match(after, /^\[commands\.Land\]$/m);
+	assert.match(after, /^"<leader>L" = ":Land<CR>"$/m);
+	assert.equal(after.match(/^\[keys\.normal\]$/gm).length, 1, "the mapping goes into the [keys.normal] that's there");
+	assert.match(vigent(["config", "check"], { env: h.env }).out, /: ok ·/);
+
+	// data only: two commands at once
+	const two = vigent(["add", "review-flow", "-y"], { env: h.env });
+	assert.equal(two.code, 0, two.err);
+	assert.doesNotMatch(two.out, /It runs:/);
+	assert.match(two.out, /added \[commands\.Review\], \[commands\.Fix\] to .*\nuse them with :Review, :Fix/);
+
+	// a command or a key you already have stops it, unless --force
+	const mine = home();
+	fs.mkdirSync(mine.config, { recursive: true });
+	const own = path.join(mine.config, "config.toml");
+	fs.writeFileSync(own, '[commands]\nLand = "pr"\nLook = "diff"\n');
+	const refused = vigent(["add", "land", "-y"], { env: mine.env });
+	assert.equal(refused.code, 1);
+	assert.ok(refused.err.includes(`${own} already has [commands.Land] (--force replaces it)`), refused.err);
+	const forced = vigent(["add", "land", "-y", "--force"], { env: mine.env });
+	assert.equal(forced.code, 0, forced.err);
+	assert.match(forced.out, /It replaces \[commands\.Land\]/);
+	const text = fs.readFileSync(own, "utf8");
+	assert.match(text, /^\[commands\]\nLook = "diff"\n/);
+	assert.doesNotMatch(text, /Land = "pr"/);
+	assert.ok(text.includes(land.file.split("\n").slice(2).join("\n")), "the entry's tables");
+	assert.match(vigent(["config", "check"], { env: mine.env }).out, /: ok ·/);
+
+	const keyed = home();
+	fs.mkdirSync(keyed.config, { recursive: true });
+	fs.writeFileSync(path.join(keyed.config, "config.toml"), '[keys]\n"<leader>L" = ":merge<CR>"\n');
+	const key = vigent(["add", "land", "-y"], { env: keyed.env });
+	assert.equal(key.code, 1);
+	assert.match(key.err, /already has \[keys\.normal\] "<leader>L" \(--force replaces it\)/);
+
+	// listed and found
+	const list = vigent(["add", "--list", "command"]);
+	assert.equal(list.code, 0, list.err);
+	assert.match(list.out, /^commands\n {2}land +run the tests[^\n]*\n {2}review-flow +[^\n]*\n {2}switch +/);
+	assert.doesNotMatch(list.out, /themes|harbor/);
+	assert.match(vigent(["search", "effort"]).out, /^ {2}command\/switch +:Fast and :Deep/m);
 });
 
 test("an engine: lists what it runs and asks; no is no", () => {

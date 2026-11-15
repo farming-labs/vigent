@@ -131,6 +131,16 @@ pub fn open(app: &mut App) {
     for (c, d) in EX_HELP {
         lines.push(vec![("Comment", "  ".to_string()), ("Identifier", format!("{c:<29}")), ("NormalFloat", d.to_string())]);
     }
+    // yours: [commands] and :command
+    let yours = crate::commands::windows::user_commands(app);
+    if !yours.is_empty() {
+        lines.push(vec![]);
+        lines.push(vec![("Title", "YOUR COMMANDS".to_string())]);
+        for (n, steps, d) in yours {
+            let what = d.unwrap_or_else(|| steps.join(" | "));
+            lines.push(vec![("Comment", "  ".to_string()), ("Identifier", format!("{:<29}", format!(":{n}"))), ("NormalFloat", what)]);
+        }
+    }
     lines.push(vec![]);
     let leader = if app.keymap.leader == " " { "<Space>".to_string() } else { app.keymap.leader.clone() };
     lines.push(vec![("Comment", format!("* = your mapping · leader = {leader}"))]);

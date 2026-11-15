@@ -251,7 +251,7 @@ pub fn wildmenu(app: &App, w: usize) -> Option<Vec<Seg>> {
     }
     let t = &app.theme;
     let sl = t.hl("StatusLine");
-    // a model's name beside its id (:model)
+    // a hint beside each item: a model's name (:model), what your command does
     let cells: Vec<String> = items.iter().enumerate().map(|(i, x)| match hints.get(i).filter(|h| !h.is_empty()) { Some(h) => format!(" {x}  {h} "), None => format!(" {x} ") }).collect();
     let mut first = 0usize;
     let fits = |from: usize| {

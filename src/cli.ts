@@ -67,9 +67,9 @@ themes:
   vigent config init                         write a commented config.toml
   vigent config check                        validate config.toml (theme, options, keys)
 
-registry (themes, templates, keymaps, engines and setups people share):
+registry (themes, templates, keymaps, commands, engines and setups people share):
   vigent add <name>                          show an entry's file and what it runs, then add it
-  vigent add <kind>/<name>                   when two kinds share a name (theme, template, keymap, engine, setup)
+  vigent add <kind>/<name>                   when two kinds share a name (theme, template, keymap, command, engine, setup)
       --yes               don't ask           --force   replace what's there
   vigent add --list [kind]                   every entry
   vigent search <words>                      entries with these words
@@ -430,6 +430,7 @@ async function main(): Promise<number | undefined> {
 	app.engineOptions = config.engines;
 	app.styleConfig = config.style;
 	app.commands = config.commands;
+	app.commandInfo = config.commandInfo;
 	// :trust: let this project's .vigent.toml run its commands, from now on
 	app.trustProject = () =>
 		executeProjectTrust({

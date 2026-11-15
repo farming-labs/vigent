@@ -161,6 +161,13 @@ test("completion: command names, agents anywhere in the name, themes from the st
 	assert.deepEqual(completeCommandLine("b fla", sources), { base: "b ", items: ["fix flaky test"] });
 	assert.deepEqual(completeCommandLine("colo tok", sources), { base: "colo ", items: ["tokyonight"] });
 	assert.deepEqual(completeCommandLine("merge x", sources).items, []);
+	// your own commands: after the built-ins that fit, whatever the case, each with its hint
+	const yours = { ...sources, commands: [{ name: "Review", hint: "review the branch" }, { name: "Deploy", hint: "ship it (waits for :trust)" }, { name: "Rerun", hint: "" }] };
+	assert.deepEqual(completeCommandLine("Re", yours), { base: "", items: ["Rerun", "Review"], hints: ["", "review the branch"] });
+	assert.deepEqual(completeCommandLine("re", yours), { base: "", items: ["resume", "review", "Rerun", "Review"], hints: ["", "", "", "review the branch"] });
+	assert.deepEqual(completeCommandLine("  De", yours), { base: "  ", items: ["Deploy"], hints: ["ship it (waits for :trust)"] });
+	assert.deepEqual(completeCommandLine("vs", yours), { base: "", items: ["vsplit"] }, "none of yours fit: no hints");
+	assert.deepEqual(completeCommandLine("Review x", yours).items, [], "only the name completes");
 });
 
 test("every command offered is one vigent runs", async () => {

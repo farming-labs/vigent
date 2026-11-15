@@ -1,0 +1,9 @@
+# Short names for the reasoning effort of the agent you're on
+# (with no agent open, for new agents).
+[commands.Fast]
+run = "effort low"
+description = "low reasoning effort: quick answers"
+
+[commands.Deep]
+run = "effort high"
+description = "high reasoning effort: think it through"

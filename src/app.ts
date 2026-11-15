@@ -51,7 +51,7 @@ import { didYouMean } from "./suggest.js";
 import { alertSequence, NOTIFY_MODES, type NotifyMode } from "./notify.js";
 import { VERSION_TEXT } from "./version.js";
 import { backendName, formatBytes, riftriBackends, type RiftriHealth, RIFTRI_INSTALL } from "./riftri.js";
-import { COMMAND_NAME, fillArgs, normalizeStep, type UserCommands } from "./commands.js";
+import { COMMAND_NAME, type CommandInfos, commandCompletions, describeCommand, fillArgs, normalizeStep, showCommand, type UserCommands } from "./commands.js";
 import { defaultLayout, type Layout, type StatuslinePart, type WinbarPart } from "./layout.js";
 import { allEngineIds, defaultEngine as defaultEngineFor, ENGINE_NAMES, type EngineId, type EngineInfo, isEngineId } from "./engines.js";
 import { copyToClipboard } from "./clipboard.js";
@@ -969,7 +969,8 @@ export class App implements Component {
 		// :model <id>: every ready engine's ids, the focused agent's engine's first
 		const modelIndex = modelArg && this.loadedModels ? new Map([...this.loadedModels].filter(([e]) => e === t.engine || engines.includes(e))) : undefined;
 		const efforts = ["default", ...(EFFORTS[t.engine] ?? [])];
-		return { agents: this.sessions.map((x) => x.name), themes: listThemes(), engines, models, modelIndex, modelOwn: t.engine, efforts };
+		const commands = commandCompletions(this.commands, this.commandInfo);
+		return { agents: this.sessions.map((x) => x.name), themes: listThemes(), commands, engines, models, modelIndex, modelOwn: t.engine, efforts };
 	}
 
 	/**
@@ -997,7 +998,7 @@ export class App implements Component {
 		const w = this.wild && this.wild.shown === this.cmdBuf ? this.wild : typing ? { items: typing.items, hints: typing.hints, idx: -1 } : undefined;
 		if (!w || w.items.length < 2) return undefined;
 		const P = this.painter;
-		// a model's name beside its id (:model)
+		// a hint beside each item: a model's name (:model), what your command does
 		const cells = w.items.map((t, i) => (w.hints?.[i] ? ` ${t}  ${w.hints[i]} ` : ` ${t} `));
 		let first = 0;
 		const fits = (from: number) => cells.slice(from, w.idx + 1).reduce((n, c) => n + visibleWidth(c), 0) + 4 <= width;
@@ -1725,11 +1726,13 @@ export class App implements Component {
 					if (!this.commands[arg]) this.setMessage(`E184: No such user-defined command: ${arg}`, "ErrorMsg");
 					else {
 						delete this.commands[arg];
+						delete this.commandInfo[arg];
 						this.setMessage(`deleted :${arg}`, "Comment");
 					}
 					return;
 				}
 				if (this.commands[cmd]) return this.runUserCommand(cmd, arg);
+				if (this.commandInfo[cmd]?.waitsForTrust) return this.setMessage(`:${cmd} runs shell commands from ${PROJECT_CONFIG}: it waits for :trust`, "WarningMsg");
 				this.setMessage(`E492: Not an editor command: ${cmd}`, "ErrorMsg");
 			}
 		}
@@ -1827,6 +1830,8 @@ export class App implements Component {
 	hookRunner: typeof runHook = runHook;
 	/** [commands] and :command: your own ex commands */
 	commands: UserCommands = {};
+	/** what each of them does, and which of a project's wait for :trust */
+	commandInfo: CommandInfos = {};
 	private commandDepth = 0;
 
 	private hookEnv(s: Session, hook: HookName, extra: Record<string, string> = {}): Record<string, string> {
@@ -1939,7 +1944,7 @@ export class App implements Component {
 		if (!m) {
 			const names = Object.keys(this.commands).sort();
 			if (!names.length) this.setMessage("no commands of your own yet: :command Name {cmd}, or [commands] in config.toml", "Comment");
-			else this.setMessage(names.map((n) => `${n} = ${this.commands[n].join(" | ")}`).join("   "), "Normal");
+			else this.setMessage(names.map((n) => showCommand(n, this.commands[n], this.commandInfo[n])).join("   "), "Normal");
 			return;
 		}
 		const [, name, rhs] = m;
@@ -1949,7 +1954,8 @@ export class App implements Component {
 		}
 		if (!rhs) {
 			const c = this.commands[name];
-			this.setMessage(c ? `${name} = ${c.join(" | ")}` : `E184: No such user-defined command: ${name}`, c ? "Normal" : "ErrorMsg");
+			if (!c && this.commandInfo[name]?.waitsForTrust) return this.setMessage(`${name} runs shell commands from ${PROJECT_CONFIG}: it waits for :trust`, "WarningMsg");
+			this.setMessage(c ? showCommand(name, c, this.commandInfo[name]) : `E184: No such user-defined command: ${name}`, c ? "Normal" : "ErrorMsg");
 			return;
 		}
 		if (this.commands[name] && !bang) {
@@ -1961,6 +1967,7 @@ export class App implements Component {
 		const shell = parts.findIndex((p) => normalizeStep(p).startsWith("!"));
 		const steps = [...(shell < 0 ? parts : parts.slice(0, shell)), ...(shell < 0 ? [] : [parts.slice(shell).join("|")])].map(normalizeStep).filter(Boolean);
 		this.commands[name] = steps;
+		delete this.commandInfo[name];
 		this.setMessage(`:${name} = ${steps.join(" | ")}`, "Comment");
 	}
 
@@ -4016,6 +4023,13 @@ export class App implements Component {
 		lines.push([]);
 		lines.push([["Title", "COMMANDS"]]);
 		for (const [c, d] of EX_HELP) lines.push([["Comment", "  "], ["Identifier", c.padEnd(29)], ["NormalFloat", d]]);
+		// yours: [commands] and :command
+		const yours = Object.keys(this.commands).sort();
+		if (yours.length) {
+			lines.push([]);
+			lines.push([["Title", "YOUR COMMANDS"]]);
+			for (const n of yours) lines.push([["Comment", "  "], ["Identifier", `:${n}`.padEnd(29)], ["NormalFloat", describeCommand(this.commands[n], this.commandInfo[n])]]);
+		}
 		lines.push([]);
 		lines.push([["Comment", `* = your mapping · leader = ${this.keymap.leader === " " ? "<Space>" : this.keymap.leader}`]]);
 		this.openFloat("Keys", lines, 76);

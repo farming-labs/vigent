@@ -91,6 +91,7 @@ export function executeProjectTrust(ctx: TrustSyncContext): string {
 	app.layout = config.layout;
 	app.styleConfig = config.style;
 	app.commands = config.commands;
+	app.commandInfo = config.commandInfo;
 	app.engineOptions = config.engines;
 
 	if (reloadPermissions) {

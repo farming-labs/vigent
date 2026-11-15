@@ -358,16 +358,58 @@ fn find_command(app: &App, name: &str) -> Option<Vec<String>> {
     commands_of(app).iter().find(|(n, _)| n == name).map(|(_, s)| s.clone())
 }
 
+/// What else vigent knows about a command: its description, that it waits for :trust.
+pub fn command_info<'a>(app: &'a App, name: &str) -> Option<&'a crate::config::CommandInfo> {
+    app.config.command_info.iter().find(|(n, _)| n == name).map(|(_, i)| i)
+}
+
+/// Your commands, with what each does: (name, steps, description).
+pub fn user_commands(app: &App) -> Vec<(String, Vec<String>, Option<String>)> {
+    let mut all: Vec<_> = commands_of(app).iter().map(|(n, s)| (n.clone(), s.clone(), command_info(app, n).and_then(|i| i.description.clone()))).collect();
+    all.sort_by(|a, b| a.0.cmp(&b.0));
+    all
+}
+
+/// `Name = steps · description`, as :command shows it.
+fn show_command(name: &str, steps: &[String], description: Option<&str>) -> String {
+    match description {
+        Some(d) => format!("{name} = {} · {d}", steps.join(" | ")),
+        None => format!("{name} = {}", steps.join(" | ")),
+    }
+}
+
+/// What Tab offers for your commands: (name, hint), the hint its description, "(waits for :trust)" for a project's shell command before :trust.
+pub fn command_completions(app: &App) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = commands_of(app).iter().map(|(n, _)| (n.clone(), command_info(app, n).and_then(|i| i.description.clone()).unwrap_or_default())).collect();
+    for (n, i) in &app.config.command_info {
+        if i.waits_for_trust && find_command(app, n).is_none() {
+            let hint = match &i.description {
+                Some(d) => format!("{d} (waits for :trust)"),
+                None => "(waits for :trust)".into(),
+            };
+            out.push((n.clone(), hint));
+        }
+    }
+    out
+}
+
+fn waits_for_trust(app: &App, name: &str) -> bool {
+    command_info(app, name).is_some_and(|i| i.waits_for_trust)
+}
+
+fn forget_info(app: &mut App, name: &str) {
+    app.config.command_info.retain(|(n, _)| n != name);
+}
+
 /// `:command` lists yours, `:command Name` shows one, `:command[!] Name {cmd}` defines one (for this run).
 pub fn exec_command(app: &mut App, arg: &str, bang: bool) {
     ensure_loaded(app);
     if arg.is_empty() {
-        let mut names: Vec<&(String, Vec<String>)> = app.windows.commands.iter().collect();
-        names.sort_by(|a, b| a.0.cmp(&b.0));
-        if names.is_empty() {
+        let all = user_commands(app);
+        if all.is_empty() {
             return app.say("no commands of your own yet: :command Name {cmd}, or [commands] in config.toml", "Comment");
         }
-        let msg = names.iter().map(|(n, s)| format!("{n} = {}", s.join(" | "))).collect::<Vec<_>>().join("   ");
+        let msg = all.iter().map(|(n, s, d)| show_command(n, s, d.as_deref())).collect::<Vec<_>>().join("   ");
         return app.say(msg, "Normal");
     }
     let end = arg.find(char::is_whitespace).unwrap_or(arg.len());
@@ -378,7 +420,11 @@ pub fn exec_command(app: &mut App, arg: &str, bang: bool) {
     }
     if rhs.is_empty() {
         return match find_command(app, name) {
-            Some(c) => app.say(format!("{name} = {}", c.join(" | ")), "Normal"),
+            Some(c) => {
+                let msg = show_command(name, &c, command_info(app, name).and_then(|i| i.description.as_deref()));
+                app.say(msg, "Normal")
+            }
+            None if waits_for_trust(app, name) => app.say(format!("{name} runs shell commands from {}: it waits for :trust", crate::config::PROJECT_CONFIG), "WarningMsg"),
             None => app.say(format!("E184: No such user-defined command: {name}"), "ErrorMsg"),
         };
     }
@@ -398,6 +444,7 @@ pub fn exec_command(app: &mut App, arg: &str, bang: bool) {
         Some(e) => e.1 = steps,
         None => app.windows.commands.push((name.to_string(), steps)),
     }
+    forget_info(app, name);
     app.say(msg, "Comment");
 }
 
@@ -408,6 +455,7 @@ fn delcommand(app: &mut App, ex: &Ex) {
     if app.windows.commands.len() == before {
         app.say(format!("E184: No such user-defined command: {}", ex.arg), "ErrorMsg");
     } else {
+        forget_info(app, ex.arg);
         app.say(format!("deleted :{}", ex.arg), "Comment");
     }
 }
@@ -415,6 +463,9 @@ fn delcommand(app: &mut App, ex: &Ex) {
 fn user_command(app: &mut App, ex: &Ex) {
     let name = ex.name.trim_end_matches('!');
     let Some(steps) = find_command(app, name) else {
+        if waits_for_trust(app, name) {
+            return app.say(format!(":{name} runs shell commands from {}: it waits for :trust", crate::config::PROJECT_CONFIG), "WarningMsg");
+        }
         return app.say(format!("E492: Not an editor command: {name}"), "ErrorMsg");
     };
     if app.windows.command_depth >= 10 {
@@ -560,6 +611,58 @@ mod tests {
         assert_eq!(a.message.0, "E492: Not an editor command: Nope");
         crate::commands::exec(&mut a, "!");
         assert!(a.message.0.starts_with("E471"));
+    }
+
+    #[test]
+    fn descriptions_show_in_command_and_help() {
+        use crate::config::CommandInfo;
+        let mut a = app();
+        a.config.commands = vec![("Review".into(), vec!["new -t review {args}".into()]), ("Test".into(), vec!["!npm test".into()])];
+        a.config.command_info = vec![
+            ("Review".into(), CommandInfo { description: Some("review the branch".into()), waits_for_trust: false }),
+            ("Deploy".into(), CommandInfo { description: Some("ship it".into()), waits_for_trust: true }),
+        ];
+        crate::commands::exec(&mut a, "command");
+        assert_eq!(a.message.0, "Review = new -t review {args} · review the branch   Test = !npm test");
+        crate::commands::exec(&mut a, "command Review");
+        assert_eq!(a.message.0, "Review = new -t review {args} · review the branch");
+        crate::commands::exec(&mut a, "command Deploy");
+        assert_eq!(a.message.0, "Deploy runs shell commands from .vigent.toml: it waits for :trust");
+        crate::commands::exec(&mut a, "Deploy");
+        assert_eq!(a.message.0, ":Deploy runs shell commands from .vigent.toml: it waits for :trust");
+
+        crate::commands::exec(&mut a, "help");
+        let text: Vec<String> = a.float.as_ref().unwrap().lines.iter().map(|l| l.iter().map(|(_, t)| t.as_str()).collect()).collect();
+        let at = text.iter().position(|l| l == "YOUR COMMANDS").expect("a YOUR COMMANDS section");
+        assert_eq!(text[at + 1].split_whitespace().collect::<Vec<_>>().join(" "), ":Review review the branch");
+        assert_eq!(text[at + 2].split_whitespace().collect::<Vec<_>>().join(" "), ":Test !npm test");
+        a.float = None;
+
+        // redefined or deleted, the description goes with it
+        crate::commands::exec(&mut a, "command! Review colo nord");
+        crate::commands::exec(&mut a, "command Review");
+        assert_eq!(a.message.0, "Review = colo nord");
+        a.config.command_info.push(("Test".into(), CommandInfo { description: Some("the tests".into()), waits_for_trust: false }));
+        crate::commands::exec(&mut a, "delcommand Test");
+        assert!(command_info(&a, "Test").is_none());
+    }
+
+    #[test]
+    fn your_commands_complete_with_descriptions_and_trust() {
+        use crate::config::CommandInfo;
+        let mut a = app();
+        a.config.commands = vec![("Review".into(), vec!["new -t review {args}".into()]), ("Look".into(), vec!["diff".into()])];
+        a.config.command_info = vec![
+            ("Review".into(), CommandInfo { description: Some("review the branch".into()), waits_for_trust: false }),
+            ("Deploy".into(), CommandInfo { description: Some("ship it".into()), waits_for_trust: true }),
+            ("Check".into(), CommandInfo { description: None, waits_for_trust: true }),
+        ];
+        assert_eq!(
+            command_completions(&a),
+            [("Review".to_string(), "review the branch".to_string()), ("Look".into(), String::new()), ("Deploy".into(), "ship it (waits for :trust)".into()), ("Check".into(), "(waits for :trust)".into())]
+        );
+        crate::commands::exec(&mut a, "command Ask colo nord");
+        assert!(command_completions(&a).iter().any(|(n, h)| n == "Ask" && h.is_empty()), "one defined with :command");
     }
 
     #[test]

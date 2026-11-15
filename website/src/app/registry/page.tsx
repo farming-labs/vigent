@@ -9,7 +9,7 @@ export const dynamic = "force-static";
 
 export const metadata: Metadata = {
   title: "vigent registry",
-  description: "Themes, templates, keymaps, engines and setups for vigent. Each one is a small file you can read before you add it.",
+  description: "Themes, templates, keymaps, commands, engines and setups for vigent. Each one is a small file you can read before you add it.",
 };
 
 export default function RegistryPage() {
@@ -55,7 +55,7 @@ export default function RegistryPage() {
           <span className="str">registry/&lt;kind&gt;/&lt;name&gt;/meta.toml</span> <span className="cm">description, author, license, tags</span>
         </L>
         <L />
-        <L>The kind is theme, template, keymap, engine or setup, and the name is lowercase words joined by -. entry.toml is what vigent writes:</L>
+        <L>The kind is theme, template, keymap, command, engine or setup, and the name is lowercase words joined by -. entry.toml is what vigent writes:</L>
         <L className="indent">
           <span className="kw">theme</span> <span className="cm">a theme file, as in ~/.config/vigent/themes/&lt;name&gt;.toml: extends a built-in, [highlights], [style]</span>
         </L>
@@ -64,6 +64,9 @@ export default function RegistryPage() {
         </L>
         <L className="indent">
           <span className="kw">keymap</span> <span className="cm">[keys.normal] and the other modes, merged into config.toml</span>
+        </L>
+        <L className="indent">
+          <span className="kw">command</span> <span className="cm">[commands.&lt;Name&gt;] tables with a description, and [keys.*] that call them, merged into config.toml</span>
         </L>
         <L className="indent">
           <span className="kw">engine</span> <span className="cm">one [engines.&lt;name&gt;] with a command, merged into config.toml</span>

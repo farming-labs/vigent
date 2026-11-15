@@ -125,6 +125,50 @@
       "runs": []
     },
     {
+      "name": "land",
+      "kind": "command",
+      "description": "run the tests, then open a pull request: :Land or <leader>L",
+      "author": "vigent",
+      "license": "MIT",
+      "tags": [
+        "pr",
+        "tests",
+        "leader"
+      ],
+      "file": "# :Land runs the project's tests in the agent's worktree, then opens a pull\n# request; a failing test stops it before anything is pushed. <leader>L too.\n[commands.Land]\nrun = [\n  \"!if [ -f Cargo.toml ]; then cargo test; elif [ -f go.mod ]; then go test ./...; elif [ -f pyproject.toml ]; then python -m pytest; else npm test; fi\",\n  \"pr\",\n]\ndescription = \"run the tests in the agent's worktree, then push the branch and open a pull request\"\n\n[keys.normal]\n\"<leader>L\" = \":Land<CR>\"\n",
+      "runs": [
+        {
+          "from": "commands.Land",
+          "command": "if [ -f Cargo.toml ]; then cargo test; elif [ -f go.mod ]; then go test ./...; elif [ -f pyproject.toml ]; then python -m pytest; else npm test; fi"
+        }
+      ]
+    },
+    {
+      "name": "review-flow",
+      "kind": "command",
+      "description": ":Review and :Fix start agents from the review and fix templates",
+      "author": "vigent",
+      "license": "MIT",
+      "tags": [
+        "review",
+        "templates"
+      ],
+      "file": "# :Review and :Fix start an agent from the review and fix templates that ship\n# with vigent; what you type after the name is the task.\n[commands.Review]\nrun = \"new -t review {args}\"\ndescription = \"start an agent that reviews the branch with the review template\"\n\n[commands.Fix]\nrun = \"new -t fix {args}\"\ndescription = \"start an agent that fixes what you describe, with the fix template\"\n",
+      "runs": []
+    },
+    {
+      "name": "switch",
+      "kind": "command",
+      "description": ":Fast and :Deep switch the agent's reasoning effort to low or high",
+      "author": "vigent",
+      "license": "MIT",
+      "tags": [
+        "effort"
+      ],
+      "file": "# Short names for the reasoning effort of the agent you're on\n# (with no agent open, for new agents).\n[commands.Fast]\nrun = \"effort low\"\ndescription = \"low reasoning effort: quick answers\"\n\n[commands.Deep]\nrun = \"effort high\"\ndescription = \"high reasoning effort: think it through\"\n",
+      "runs": []
+    },
+    {
       "name": "aider",
       "kind": "engine",
       "description": "Aider as an engine, with :model choosing its model",

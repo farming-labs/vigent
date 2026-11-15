@@ -102,12 +102,13 @@ before_merge = "npm test"       # :merge and :pr only land a passing branch
 Test = "!npm test"              # :Test runs in the agent's worktree
 ```
 
-Themes, templates, keymaps, engines and setups other people made are one command away. `vigent add` shows the file, and every command it runs, before it asks:
+Themes, templates, keymaps, commands, engines and setups other people made are one command away. `vigent add` shows the file, and every command it runs, before it asks:
 
 ```bash
 vigent add --list                  # what's in the registry
 vigent add harbor                  # a theme; :colorscheme harbor
 vigent add pnpm-monorepo           # a .vigent.toml for this repo, waiting for :trust
+vigent add land                    # a command: :Land runs the tests, then opens a pull request
 ```
 
 ## Docs

@@ -1,0 +1,4 @@
+description = "run the tests, then open a pull request: :Land or <leader>L"
+author = "vigent"
+license = "MIT"
+tags = ["pr", "tests", "leader"]

@@ -20,7 +20,7 @@ test("every entry in the repo loads, and the index is up to date", () => {
 	assert.deepEqual(problems, []);
 	assert.equal(fs.readFileSync(INDEX_FILE, "utf8"), indexText(index), "npm run registry writes it");
 	const names = index.entries.map((e) => `${e.kind}/${e.name}`);
-	for (const n of ["theme/harbor", "theme/ember", "template/fix-ci", "template/test-the-diff", "template/race-review", "keymap/leader-land", "engine/aider", "engine/amp", "engine/goose", "setup/pnpm-monorepo", "setup/cargo-workspace"]) {
+	for (const n of ["theme/harbor", "theme/ember", "template/fix-ci", "template/test-the-diff", "template/race-review", "keymap/leader-land", "command/land", "command/review-flow", "command/switch", "engine/aider", "engine/amp", "engine/goose", "setup/pnpm-monorepo", "setup/cargo-workspace"]) {
 		assert.ok(names.includes(n), `${n} is listed`);
 	}
 	assert.ok(!names.includes("theme/nord"), "built-in themes aren't entries");
@@ -57,6 +57,45 @@ test("what an entry runs comes from the file: hooks, shell commands, engine comm
 		{ from: "commands.Land", command: "npm test" },
 	]);
 	assert.equal(shellWords(["sh", "-c", "echo 'hi there'"]), `sh -c 'echo '\\''hi there'\\'''`);
+});
+
+test("a command entry: [commands.<Name>] tables with descriptions, [keys.*] that call them, every shell step listed", () => {
+	const index = buildIndex().index;
+	const land = index.entries.find((e) => e.name === "land");
+	assert.equal(land.kind, "command");
+	assert.deepEqual(land.runs.map((r) => r.from), ["commands.Land"]);
+	assert.match(land.runs[0].command, /cargo test.*npm test; fi$/);
+	assert.deepEqual(index.entries.find((e) => e.name === "review-flow").runs, [], "ex steps only: data only");
+	assert.deepEqual(index.entries.find((e) => e.name === "switch").runs, []);
+
+	const problems = (name, entry) => checkEntry("command", name, { "entry.toml": entry, "meta.toml": META }).problems;
+	const ok = '[commands.Ship]\nrun = ["!npm test", "!npm run build", ":pr"]\ndescription = "test, build, pr"\n[commands.Look]\nrun = "diff"\ndescription = "the diff"\n[keys.normal]\n"<leader>S" = ":Ship<CR>"\n';
+	assert.deepEqual(problems("ship", ok), []);
+	assert.deepEqual(
+		checkEntry("command", "ship", { "entry.toml": ok, "meta.toml": META }).entry.runs,
+		[
+			{ from: "commands.Ship", command: "npm test" },
+			{ from: "commands.Ship", command: "npm run build" },
+		],
+		"every shell step, from the file",
+	);
+	assert.ok(problems("Bad_Name", ok).some((p) => /'Bad_Name' isn't a name/.test(p)), "the entry's name");
+	assert.ok(problems("x", '[commands.ship]\nrun = "pr"\ndescription = "d"\n').some((p) => /'ship' should start with a capital letter/.test(p)), "vigent's own warning for a lowercase command");
+	assert.ok(problems("x", '[commands]\nShip = "pr"\n').some((p) => /\[commands.Ship\] should be a table with run and description/.test(p)));
+	assert.ok(problems("x", '[commands.Ship]\nrun = "pr"\n').some((p) => /\[commands.Ship\] needs a description/.test(p)));
+	assert.ok(problems("x", '[commands.Ship]\ndescription = "d"\n').some((p) => /'run' is missing/.test(p)));
+	assert.ok(problems("x", '[keys.normal]\n"<leader>S" = ":pr<CR>"\n').some((p) => /\[commands.<Name>\] is missing/.test(p)));
+	assert.ok(problems("x", '[hooks]\nbefore_merge = "x"\n[commands.Ship]\nrun = "pr"\ndescription = "d"\n').some((p) => /has only \[commands.<Name>\] and \[keys.\*\]/.test(p)));
+	assert.ok(problems("x", '[commands.Ship]\nrun = ["command! X !rm -rf ~", "X"]\ndescription = "d"\n').some((p) => /can't define commands or mappings/.test(p)));
+	assert.ok(problems("x", '[commands.Ship]\nrun = "nmap x :!rm -rf ~<CR>"\ndescription = "d"\n').some((p) => /can't define commands or mappings/.test(p)));
+	const keys = problems("x", '[commands.Ship]\nrun = "pr"\ndescription = "d"\n[keys.normal]\n"<leader>x" = ":!rm -rf ~<CR>"\n"<leader>y" = ":Shipit<CR>"\n"<leader>z" = ":Ship<CR>"\n');
+	assert.deepEqual(
+		keys.filter((p) => /mappings call its commands/.test(p)).length,
+		2,
+		keys.join("\n"),
+	);
+	// a keymap alone still can't define commands
+	assert.ok(checkEntry("keymap", "x", { "entry.toml": '[commands.Ship]\nrun = "pr"\ndescription = "d"\n', "meta.toml": META }).problems.some((p) => /a keymap entry has only \[keys.\*\], not 'commands'/.test(p)));
 });
 
 test("a bad entry is rejected with every problem listed", () => {

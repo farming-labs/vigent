@@ -6,12 +6,13 @@
 import index from "../../public/registry/index.json";
 import { type ThemeColors, THEMES } from "./themes";
 
-export type Kind = "theme" | "template" | "keymap" | "engine" | "setup";
+export type Kind = "theme" | "template" | "keymap" | "command" | "engine" | "setup";
 
 export const KINDS: { id: Kind; label: string; plural: string; what: string }[] = [
   { id: "theme", label: "theme", plural: "themes", what: "colors, plus layout and icons through [style]" },
   { id: "template", label: "template", plural: "templates", what: "prompts you start agents with: :new -t <name>" },
   { id: "keymap", label: "keymap", plural: "keymaps", what: "key bindings, in vim's notation" },
+  { id: "command", label: "command", plural: "commands", what: "your own : commands, with a description and keys that call them" },
   { id: "engine", label: "engine", plural: "engines", what: "another agent CLI, in a few lines of config" },
   { id: "setup", label: "setup", plural: "setups", what: "a .vigent.toml for a stack: hooks, commands, permissions" },
 ];

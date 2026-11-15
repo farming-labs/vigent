@@ -567,6 +567,7 @@ fn sources(app: &App) -> crate::completion::Sources {
     crate::completion::Sources {
         agents: app.open().iter().map(|&i| app.sessions[i].name.clone()).collect(),
         themes: crate::theme::names().into_iter().map(String::from).collect(),
+        commands: crate::commands::windows::command_completions(app),
         engines,
         models: vec![],
         model_index,

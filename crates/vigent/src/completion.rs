@@ -16,6 +16,8 @@ const THEME_COMMANDS: &[&str] = &["colorscheme", "colo", "theme"];
 pub struct Sources {
     pub agents: Vec<String>,
     pub themes: Vec<String>,
+    /// your own commands ([commands], :command), each with its hint: its description, or that it waits for :trust
+    pub commands: Vec<(String, String)>,
     /// what `:race --engines` offers
     pub engines: Vec<String>,
     /// what `:race --models` offers
@@ -40,14 +42,14 @@ pub fn complete_command_line(line: &str, sources: &Sources) -> (String, Vec<Stri
     (base, items)
 }
 
-/// complete_command_line, with a hint beside each item (a model's name), "" for none.
+/// complete_command_line, with a hint beside each item (a model's name, what your command does), "" for none.
 pub fn complete_with_hints(line: &str, sources: &Sources) -> (String, Vec<String>, Vec<String>) {
     let lead_len = line.len() - line.trim_start().len();
     let (lead, rest) = line.split_at(lead_len);
     let cmd_len = rest.find(char::is_whitespace).unwrap_or(rest.len());
     let (cmd, after) = rest.split_at(cmd_len);
     if after.is_empty() {
-        return (lead.to_string(), EX_COMMANDS.iter().filter(|c| c.starts_with(cmd)).map(|c| c.to_string()).collect(), vec![]);
+        return complete_name(lead, cmd, &sources.commands);
     }
     let gap_len = after.len() - after.trim_start().len();
     let (gap, arg) = after.split_at(gap_len);
@@ -81,6 +83,23 @@ pub fn complete_with_hints(line: &str, sources: &Sources) -> (String, Vec<String
     let needle = arg.to_lowercase();
     let items = options.into_iter().filter(|o| if agents { o.to_lowercase().contains(&needle) } else { o.to_lowercase().starts_with(&needle) }).collect();
     (base, items, vec![])
+}
+
+/// A command's name: the built-ins that start with it, then yours (whatever the case: `:re` offers `Review` too), with their hints.
+fn complete_name(lead: &str, cmd: &str, commands: &[(String, String)]) -> (String, Vec<String>, Vec<String>) {
+    let mut items: Vec<String> = EX_COMMANDS.iter().filter(|c| c.starts_with(cmd)).map(|c| c.to_string()).collect();
+    let needle = cmd.to_lowercase();
+    let mut yours: Vec<&(String, String)> = commands.iter().filter(|(n, _)| n.to_lowercase().starts_with(&needle)).collect();
+    if yours.is_empty() {
+        return (lead.to_string(), items, vec![]);
+    }
+    yours.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut hints = vec![String::new(); items.len()];
+    for (n, h) in yours {
+        items.push(n.clone());
+        hints.push(h.clone());
+    }
+    (lead.to_string(), items, hints)
 }
 
 /// `:race` arguments: --engines a,b and --models x,y lists, and the flags themselves.
@@ -184,6 +203,18 @@ mod tests {
         assert_eq!(complete_command_line("race fix --engines claude,c", &src()), ("race fix --engines claude,".into(), vec!["claude".to_string(), "codex".to_string()]));
         assert_eq!(complete_command_line("race fix --m", &src()), ("race fix ".into(), vec!["--models".to_string()]));
         assert_eq!(closest("colo", ["color", "x"]), Some("color"));
+    }
+
+    #[test]
+    fn your_commands_complete_with_their_hints() {
+        let s = Sources { commands: vec![("Review".into(), "review the branch".into()), ("Deploy".into(), "ship it (waits for :trust)".into()), ("Rerun".into(), String::new())], ..src() };
+        assert_eq!(complete_with_hints("Re", &s), ("".into(), vec!["Rerun".to_string(), "Review".into()], vec![String::new(), "review the branch".into()]));
+        let (_, items, hints) = complete_with_hints("re", &s);
+        assert_eq!(items, ["resume", "review", "Rerun", "Review"], "the built-ins that fit, then yours");
+        assert_eq!(hints, ["", "", "", "review the branch"]);
+        assert_eq!(complete_with_hints("  De", &s), ("  ".into(), vec!["Deploy".to_string()], vec!["ship it (waits for :trust)".to_string()]));
+        assert_eq!(complete_with_hints("vs", &s), ("".into(), vec!["vsplit".to_string()], vec![]), "none of yours fit: no hints");
+        assert_eq!(complete_command_line("Review x", &s).1, Vec::<String>::new(), "only the name completes");
     }
 
     #[test]

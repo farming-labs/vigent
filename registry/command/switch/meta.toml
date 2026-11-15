@@ -1,0 +1,4 @@
+description = ":Fast and :Deep switch the agent's reasoning effort to low or high"
+author = "vigent"
+license = "MIT"
+tags = ["effort"]
