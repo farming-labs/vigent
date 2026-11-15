@@ -27,7 +27,7 @@ export function printable(text: string): string {
 		.map((line) => line.slice(line.lastIndexOf("\r") + 1))
 		.join("\n")
 		.replace(/\t/g, "  ")
-		.replace(/(\x1b\[[0-9;:]*m)|[\x00-\x09\x0b-\x1f\x7f-\x9f؜‎‏‪-‮⁦-⁩]/g, (m, keep) => keep ?? "");
+		.replace(/(\x1b\[[0-9;:]*m)|[\x00-\x09\x0b-\x1f\x7f-\x9f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, (m, keep) => keep ?? "");
 }
 
 /** printable with no colors either: file contents, names and titles, drawn in vigent's own colors */
@@ -41,11 +41,11 @@ export function oneLine(text: string): string {
 }
 
 /** A control character a terminal acts on, or a bidi control: what config values and names may not hold. */
-export const CONTROL = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f؜‎‏‪-‮⁦-⁩]/;
+export const CONTROL = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/;
 
 /**
  * Text for a plain terminal with every character it would act on written out
- * instead: `\x1b`, `\x9b`, `\r`, `‮`. Tabs and newlines stay. For what
+ * instead: `\x1b`, `\x9b`, `\r`, `\u202e`. Tabs and newlines stay. For what
  * vigent prints from somewhere else (the registry's index) outside its own
  * screen, and file contents in a diff.
  */
@@ -66,7 +66,7 @@ export function fileText(line: string): string {
 	return escapeControls(line.replace(/\r$/, "")).replace(/\t/g, "  ");
 }
 
-const UNSAFE = /[\x00-\x09\x0b-\x1f\x7f-\x9f؜‎‏‪-‮⁦-⁩]/;
+const UNSAFE = /[\x00-\x09\x0b-\x1f\x7f-\x9f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/;
 
 /** CSI, OSC, DCS/SOS/PM/APC strings, and two-byte escapes, in their 7-bit forms */
 const ESCAPE = /\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?|\x1b[PX^_][^\x1b]*(?:\x1b\\)?|\x1b[ -/]*[0-~]?/g;
