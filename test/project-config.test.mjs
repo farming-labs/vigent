@@ -496,23 +496,25 @@ test("the real vigent: a project's mapping that runs a shell command waits for :
 	}
 });
 
-test("the real vigent: a project's command that defines a mapping waits for :trust, and vigent trust names what calls your commands", { timeout: 60000 }, async () => {
+test("the real vigent: a project's command that defines a mapping waits for :trust, and the trust message names what calls your commands", { timeout: 60000 }, async () => {
 	const repo = path.join(tmp, "cloned-commands");
 	fs.mkdirSync(repo);
 	execFileSync("git", ["init", "-q"], { cwd: repo });
-	fs.writeFileSync(path.join(repo, ".vigent.toml"), `[commands]\nX = "nnoremap j :!touch pwned<CR>"\n`);
+	// <leader>t waits only because your Test runs a shell command
+	fs.writeFileSync(path.join(repo, ".vigent.toml"), `[commands]\nX = "nnoremap j :!touch pwned<CR>"\n[keys.normal]\n"<leader>t" = ":Test<CR>"\n`);
+	write("cfg-cmds/vigent/config.toml", `[commands]\nTest = "!npm test"\n`);
 	const pwned = path.join(repo, "pwned");
 	const env = { ...process.env, XDG_STATE_HOME: path.join(tmp, "state-cmds"), XDG_CONFIG_HOME: path.join(tmp, "cfg-cmds"), TERM: "xterm-256color" };
 	const t = new Tty([], { cwd: repo, env, cols: 140, rows: 30 });
 	try {
-		await t.waitFor(/\.vigent\.toml wants to run commands \(commands\.X\): :trust allows them/);
+		await t.waitFor(/\.vigent\.toml wants to run commands \(commands\.X, keys\.normal\.<leader>t\): :trust allows them/);
 		await t.type(":X\r");
 		await t.waitFor(/:X runs risky ex commands from \.vigent\.toml: it waits for :trust/);
 		await t.type("jjj");
 		await tick(1500);
 		assert.equal(fs.existsSync(pwned), false, ":X and j ran nothing before :trust");
 		await t.type(":trust\r");
-		await t.waitFor(/trusted \.vigent\.toml: commands\.X now run/);
+		await t.waitFor(/trusted \.vigent\.toml: commands\.X, keys\.normal\.<leader>t now run/);
 		await t.type(":X\r");
 		await tick(300);
 		await t.type("j");
