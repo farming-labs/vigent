@@ -140,6 +140,10 @@
         {
           "from": "commands.Land",
           "command": "if [ -f Cargo.toml ]; then cargo test; elif [ -f go.mod ]; then go test ./...; elif [ -f pyproject.toml ]; then python -m pytest; else npm test; fi"
+        },
+        {
+          "from": "keys.normal.<leader>L",
+          "command": "Land"
         }
       ]
     },
