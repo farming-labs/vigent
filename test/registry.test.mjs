@@ -98,6 +98,24 @@ test("a command entry: [commands.<Name>] tables with descriptions, [keys.*] that
 	assert.ok(checkEntry("keymap", "x", { "entry.toml": '[commands.Ship]\nrun = "pr"\ndescription = "d"\n', "meta.toml": META }).problems.some((p) => /a keymap entry has only \[keys.\*\], not 'commands'/.test(p)));
 });
 
+test("a keymap that runs a shell command says so; one that defines commands or mappings is rejected", () => {
+	const check = (entry) => checkEntry("keymap", "x", { "entry.toml": entry, "meta.toml": META });
+	const shell = check('[keys.normal]\n"<leader>x" = ":!x<CR>"\n"<leader>y" = "q:!make test<CR>"\n"<leader>c" = ":colorscheme nord<CR>"\n[keys.command]\n"<C-x>" = "!y<CR>"\n');
+	assert.deepEqual(shell.problems, []);
+	assert.deepEqual(runsOf({ keys: { normal: { "<leader>x": ":!x<CR>", "<leader>y": "q:!make test<CR>" } } }, ["keys.normal.<leader>x", "keys.normal.<leader>y"]), [
+		{ from: "keys.normal.<leader>x", command: "!x" },
+		{ from: "keys.normal.<leader>y", command: "!make test" },
+	]);
+	assert.deepEqual(runsOf({ keys: { "a.b": ":!x<CR>" } }, ["keys.normal.a.b"]), [{ from: "keys.normal.a.b", command: "!x" }], "a dot in the key, under [keys]");
+
+	const problems = (rhs) => check(`[keys.normal]\n"<leader>x" = ${JSON.stringify(rhs)}\n`).problems;
+	for (const rhs of [":nnoremap j :!x<CR>", "q:nmap j :!x<CR>", ":command! X !y<CR>", ":normal ihi<CR>", ":execute 'x'<CR>", ":source evil.vim<CR>", ":delcommand Land<CR>"]) {
+		assert.match(problems(rhs).join("\n"), /\[keys.normal\] "<leader>x": a keymap can't define commands or mappings, or replay keys \(:/, rhs);
+	}
+	assert.match(problems(":trust<CR>").join("\n"), /a keymap can't trust a project or allow Claude Code rules \(:trust\)/);
+	assert.match(problems("q:kill<Home>!<CR>").join("\n"), /vigent can't tell what this mapping runs/);
+});
+
 test("a bad entry is rejected with every problem listed", () => {
 	const problems = (kind, name, files) => checkEntry(kind, name, files).problems;
 	assert.match(problems("plugin", "x", { "entry.toml": "", "meta.toml": META })[0], /unknown kind 'plugin'/);
