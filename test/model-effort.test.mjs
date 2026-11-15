@@ -107,7 +107,8 @@ test(":model and :effort pick for the focused agent; the next prompt uses them, 
 	await tick();
 	assert.equal(s.effort, undefined);
 	ex("model claude-opus-4-1");
-	await tick();
+	// no engine lists it: a name for the agent's own engine, once the engines' lists say so
+	for (let i = 0; i < 1000 && s.chosenModel !== "claude-opus-4-1"; i++) await tick();
 	assert.equal(s.chosenModel, "claude-opus-4-1");
 
 	// a name the list doesn't have: typed, then Enter uses it as is
@@ -266,7 +267,7 @@ test("model names: versions spelled out from the ids", async () => {
 	for (const [id, name] of Object.entries(cases)) assert.equal(modelLabel(id), name, id);
 });
 
-test(":model is one plain list of every ready engine's models; a GPT model from a Claude agent sets new agents' engine", async () => {
+test(":model is one plain list of every ready engine's models; a GPT model moves a Claude agent to Codex", async () => {
 	const overlays = [];
 	const tui = { requestRender() {}, showOverlay: (c) => (overlays.push(c), { hide() {} }) };
 	const app = new App(tui, { rows: 40, columns: 120, write() {} }, new Painter(BUILTIN_THEMES.default), { ...DEFAULT_UI }, new Keymap());
@@ -281,7 +282,8 @@ test(":model is one plain list of every ready engine's models; a GPT model from 
 		{ value: "gpt-5.5-codex", label: "GPT-5.5 Codex", note: "gpt-5.5-codex" },
 		{ value: "gpt-5.5", label: "GPT-5.5", note: "gpt-5.5" },
 	];
-	app.modelChoices = async (engine) => (engine === "codex" ? codex : modelChoices(engine));
+	app.modelChoices = async (engine) => (engine === "codex" ? codex : engine === "pi" ? [] : modelChoices(engine));
+	app.switchSession = (old, to) => new CliSession(old.name, to.engine, to.model, { cwd: tmp, bin: "/nonexistent", effort: to.effort });
 	const s = new CliSession("racer", "claude", undefined, { cwd: tmp, bin: "/nonexistent" });
 	app.addSession(s, true);
 	const ex = (cmd) => [":", ...cmd, "\r"].forEach((k) => app.handleInput(k));
@@ -300,17 +302,18 @@ test(":model is one plain list of every ready engine's models; a GPT model from 
 	for (const k of "/gpt-5.5 codex") picker.handleInput(k);
 	picker.handleInput("\r");
 	await tick();
-	assert.equal(s.chosenModel, undefined, "the Claude agent keeps its model");
-	assert.equal(app.preferredEngine, "codex");
-	assert.equal(app.newAgentModel.codex, "gpt-5.5-codex");
-	assert.match(app.message, /'racer' keeps its model \(its conversation can't move\) · new agents use GPT-5\.5 Codex · :new <task> starts one/);
+	const moved = app.focusedSession;
+	assert.notEqual(moved, s, "a session on Codex took its place");
+	assert.equal(app.sessions.length, 1);
+	assert.deepEqual([moved.name, moved.engine, moved.chosenModel], ["racer", "codex", "gpt-5.5-codex"]);
+	assert.equal(app.preferredEngine, "auto", "new agents are left as they were");
+	assert.equal(app.message, "'racer' now runs gpt-5.5-codex (GPT-5.5 Codex, Codex)");
 
-	// typed, the same way; and the agent's own engine without a prefix
-	ex("model codex:gpt-5.5");
-	assert.equal(app.newAgentModel.codex, "gpt-5.5");
-	ex("model claude:claude-haiku-5-5");
-	await tick();
-	assert.equal(s.chosenModel, "claude-haiku-5-5");
+	// typed, an exact id: Claude Code's lists it, so back it goes
+	ex("model claude-haiku-5-5");
+	for (let i = 0; i < 300 && app.focusedSession.engine !== "claude"; i++) await tick();
+	assert.deepEqual([app.focusedSession.engine, app.focusedSession.chosenModel], ["claude", "claude-haiku-5-5"]);
+	assert.equal(app.message, "'racer' now runs claude-haiku-5-5 (Claude Haiku 5.5, Claude Code)");
 
 	// it opens on the agent's model; j goes on to the first GPT model
 	ex("model");
@@ -321,6 +324,8 @@ test(":model is one plain list of every ready engine's models; a GPT model from 
 	p2.handleInput("j");
 	assert.match(plain(p2.render(90)), / 6\/7 /);
 	p2.handleInput("\r");
-	assert.equal(app.newAgentModel.codex, "gpt-5.5-codex");
+	await tick();
+	assert.deepEqual([app.focusedSession.engine, app.focusedSession.chosenModel], ["codex", "gpt-5.5-codex"]);
+	for (const x of app.sessions) x.dispose();
 	s.dispose();
 });

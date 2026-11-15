@@ -114,6 +114,17 @@ pub struct Session {
     pub ask: Option<engines::permissions::Ask>,
     /// each tool call's output, by its id (shown when its fold is open: za, zR)
     pub tool_output: std::collections::HashMap<String, String>,
+    /// the conversation so far, from the engine it ran on before (`:model` with another
+    /// engine's model): the next prompt that goes out starts with it, once
+    pub handoff: Option<String>,
+    /// the handoff went out: the App saves the record without it (agents.rs)
+    pub handoff_sent: bool,
+    /// the model's readable name, from its engine's list, when it moved to it from another engine
+    pub model_name: Option<String>,
+    /// a move to another engine, waiting for its turn to end (the last pick wins)
+    pub pending_switch: Option<engines::handoff::ModelPick>,
+    /// pi starts a new conversation instead of continuing the last one (it moved here from another engine)
+    pub pi_fresh: bool,
 }
 
 /// 74800 -> "74.8k tok" (src/app.ts formatTokens)
@@ -226,6 +237,11 @@ impl Session {
             pi: None,
             ask: None,
             tool_output: Default::default(),
+            handoff: None,
+            handoff_sent: false,
+            model_name: None,
+            pending_switch: None,
+            pi_fresh: false,
         }
     }
 
@@ -379,7 +395,9 @@ impl Session {
             allowed_tools: launch.allow.clone(),
             ..Default::default()
         };
-        match engines::run::spawn(adapter, &launch.bin, self.slot, &self.path, &text, &opts, &launch.drop_env, tx) {
+        // the first prompt after a move from another engine carries the conversation so far
+        let prompt = format!("{}{text}", self.take_handoff());
+        match engines::run::spawn(adapter, &launch.bin, self.slot, &self.path, &prompt, &opts, &launch.drop_env, tx) {
             Ok(child) => {
                 self.child = Some(child);
                 self.state = State::Running;
@@ -392,6 +410,17 @@ impl Session {
                 self.items.push(Item::Error(format!("error: {}: {e}", launch.bin)));
                 self.state = State::Error;
             }
+        }
+    }
+
+    /// What goes before the prompt going out now: the handoff, the first time.
+    pub fn take_handoff(&mut self) -> String {
+        match self.handoff.take() {
+            Some(h) => {
+                self.handoff_sent = true;
+                h
+            }
+            None => String::new(),
         }
     }
 

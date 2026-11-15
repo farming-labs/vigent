@@ -239,11 +239,11 @@ pub fn wildmenu(app: &App, w: usize) -> Option<Vec<Seg>> {
     if app.mode != Mode::Command {
         return None;
     }
-    let (items, idx): (Vec<String>, isize) = match &app.windows.wild {
-        Some(wl) if wl.shown == app.cmd => (wl.items.clone(), wl.idx as isize),
+    let (items, hints, idx): (Vec<String>, Vec<String>, isize) = match &app.windows.wild {
+        Some(wl) if wl.shown == app.cmd => (wl.items.clone(), wl.hints.clone(), wl.idx as isize),
         _ => {
             let typing = crate::actions::windows::completion_as_typed(app)?;
-            (typing.0, -1)
+            (typing.0, typing.2, -1)
         }
     };
     if items.len() < 2 {
@@ -251,7 +251,8 @@ pub fn wildmenu(app: &App, w: usize) -> Option<Vec<Seg>> {
     }
     let t = &app.theme;
     let sl = t.hl("StatusLine");
-    let cells: Vec<String> = items.iter().map(|x| format!(" {x} ")).collect();
+    // a model's name beside its id (:model)
+    let cells: Vec<String> = items.iter().enumerate().map(|(i, x)| match hints.get(i).filter(|h| !h.is_empty()) { Some(h) => format!(" {x}  {h} "), None => format!(" {x} ") }).collect();
     let mut first = 0usize;
     let fits = |from: usize| {
         let upto = (idx + 1).max(0) as usize;

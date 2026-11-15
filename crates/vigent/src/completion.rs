@@ -20,25 +20,53 @@ pub struct Sources {
     pub engines: Vec<String>,
     /// what `:race --models` offers
     pub models: Vec<String>,
+    /// what `:model` offers: every ready engine's models, with their names
+    pub model_index: Option<crate::engines::handoff::ModelIndex>,
+    /// the engine whose models `:model` offers first (the focused agent's)
+    pub model_own: Option<String>,
+    /// what `:effort` offers: the levels the focused agent's engine takes
+    pub efforts: Vec<String>,
+}
+
+/// The command line is at `:model <id>`: Tab will want the engines' models.
+pub fn wants_models(line: &str) -> bool {
+    let t = line.trim_start();
+    t.strip_prefix("model").or_else(|| t.strip_prefix("mo")).is_some_and(|rest| rest.starts_with(char::is_whitespace))
 }
 
 /// The text before the part being completed, and what that part could be.
 pub fn complete_command_line(line: &str, sources: &Sources) -> (String, Vec<String>) {
+    let (base, items, _) = complete_with_hints(line, sources);
+    (base, items)
+}
+
+/// complete_command_line, with a hint beside each item (a model's name), "" for none.
+pub fn complete_with_hints(line: &str, sources: &Sources) -> (String, Vec<String>, Vec<String>) {
     let lead_len = line.len() - line.trim_start().len();
     let (lead, rest) = line.split_at(lead_len);
     let cmd_len = rest.find(char::is_whitespace).unwrap_or(rest.len());
     let (cmd, after) = rest.split_at(cmd_len);
     if after.is_empty() {
-        return (lead.to_string(), EX_COMMANDS.iter().filter(|c| c.starts_with(cmd)).map(|c| c.to_string()).collect());
+        return (lead.to_string(), EX_COMMANDS.iter().filter(|c| c.starts_with(cmd)).map(|c| c.to_string()).collect(), vec![]);
     }
     let gap_len = after.len() - after.trim_start().len();
     let (gap, arg) = after.split_at(gap_len);
     let base = format!("{lead}{cmd}{gap}");
     if cmd == "race" || cmd == "race!" {
         return match complete_race_arg(arg, sources) {
-            Some((b, items)) => (base + &b, items),
-            None => (base, vec![]),
+            Some((b, items)) => (base + &b, items, vec![]),
+            None => (base, vec![], vec![]),
         };
+    }
+    if cmd == "model" || cmd == "mo" {
+        // exact ids that start with or contain what's typed, each with its name and version
+        let found = sources.model_index.as_ref().map(|i| crate::engines::handoff::model_completions(arg, sources.model_own.as_deref(), i)).unwrap_or_default();
+        let hints = found.iter().map(|c| c.1.clone().unwrap_or_default()).collect();
+        return (base, found.into_iter().map(|c| c.0).collect(), hints);
+    }
+    if cmd == "effort" || cmd == "think" {
+        let needle = arg.to_lowercase();
+        return (base, sources.efforts.iter().filter(|e| e.starts_with(&needle)).cloned().collect(), vec![]);
     }
     let agents = AGENT_COMMANDS.contains(&cmd);
     let options: Vec<String> = if agents {
@@ -52,7 +80,7 @@ pub fn complete_command_line(line: &str, sources: &Sources) -> (String, Vec<Stri
     };
     let needle = arg.to_lowercase();
     let items = options.into_iter().filter(|o| if agents { o.to_lowercase().contains(&needle) } else { o.to_lowercase().starts_with(&needle) }).collect();
-    (base, items)
+    (base, items, vec![])
 }
 
 /// `:race` arguments: --engines a,b and --models x,y lists, and the flags themselves.
@@ -127,7 +155,24 @@ mod tests {
             themes: vec!["gruvbox".into(), "nord".into()],
             engines: vec!["claude".into(), "codex".into()],
             models: vec!["gpt-5".into()],
+            ..Default::default()
         }
+    }
+
+    #[test]
+    fn model_ids_with_their_names_and_effort_levels() {
+        use crate::engines::choices::Choice;
+        let c = |v: &str, l: &str| Choice::new(v, Some(l), None);
+        let s = Sources {
+            model_index: Some(vec![("claude".into(), vec![c("claude-opus-5-5", "Claude Opus 5.5"), c("claude-opus-5-1", "Claude Opus 5.1")]), ("codex".into(), vec![c("gpt-5.5", "GPT-5.5")])]),
+            model_own: Some("codex".into()),
+            efforts: vec!["default".into(), "low".into(), "high".into()],
+            ..Default::default()
+        };
+        assert_eq!(complete_with_hints("model opus", &s), ("model ".into(), vec!["claude-opus-5-5".to_string(), "claude-opus-5-1".into()], vec!["Claude Opus 5.5".to_string(), "Claude Opus 5.1".into()]));
+        assert_eq!(complete_command_line("model gpt", &s).1, ["gpt-5.5"]);
+        assert_eq!(complete_command_line("effort h", &s).1, ["high"]);
+        assert!(wants_models("model gp") && wants_models("mo ") && !wants_models("model") && !wants_models("modelx y"));
     }
 
     #[test]

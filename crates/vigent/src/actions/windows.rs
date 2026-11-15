@@ -558,11 +558,20 @@ pub fn submit(app: &mut App) {
 
 fn sources(app: &App) -> crate::completion::Sources {
     let ready: Vec<String> = app.engines.infos.iter().filter(|e| e.connected).map(|e| e.id.clone()).collect();
+    let engines: Vec<String> = if ready.is_empty() { crate::engines::KNOWN.iter().map(|e| e.id.to_string()).collect() } else { ready };
+    let own = crate::engines::select::target(app).engine;
+    // :model <id>: every ready engine's ids, the focused agent's engine's first
+    let model_index = app.engines.models.as_ref().map(|i| i.iter().filter(|(e, _)| *e == own || engines.contains(e)).cloned().collect());
+    let mut efforts = vec!["default".to_string()];
+    efforts.extend(crate::engines::efforts(&own).iter().map(|e| e.to_string()));
     crate::completion::Sources {
         agents: app.open().iter().map(|&i| app.sessions[i].name.clone()).collect(),
         themes: crate::theme::names().into_iter().map(String::from).collect(),
-        engines: if ready.is_empty() { crate::engines::KNOWN.iter().map(|e| e.id.to_string()).collect() } else { ready },
+        engines,
         models: vec![],
+        model_index,
+        model_own: Some(own),
+        efforts,
     }
 }
 
@@ -576,13 +585,13 @@ fn complete(app: &mut App, dir: i32) {
         let b = LineBuffer::new(&app.cmd, crate::ui::statusline::cursor_pos(app, false));
         let (before, under, rest) = b.parts();
         let after = if b.pos < b.chars.len() { format!("{under}{rest}") } else { String::new() };
-        let (base, items) = crate::completion::complete_command_line(&before, &sources(app));
+        let (base, items, hints) = crate::completion::complete_with_hints(&before, &sources(app));
         if items.is_empty() {
             app.windows.wild = None;
             return;
         }
         let idx = if dir > 0 { 0 } else { items.len() - 1 };
-        app.windows.wild = Some(Wild { base, items, idx, typed: before, after, shown: String::new() });
+        app.windows.wild = Some(Wild { base, items, hints, idx, typed: before, after, shown: String::new() });
     } else if let Some(w) = app.windows.wild.as_mut() {
         // past the last one is what was typed, as in vim
         let stops = w.items.len() as isize + 1;
@@ -602,20 +611,20 @@ fn complete(app: &mut App, dir: i32) {
 }
 
 /// What fits the command line as it's typed, before any <Tab>: every match, and the rest of the first one.
-pub fn completion_as_typed(app: &App) -> Option<(Vec<String>, String)> {
+pub fn completion_as_typed(app: &App) -> Option<(Vec<String>, String, Vec<String>)> {
     if app.mode != Mode::Command || app.windows.line_normal(app.mode) || app.cmd.trim().is_empty() || crate::ui::statusline::cursor_pos(app, false) < app.cmd.chars().count() {
         return None;
     }
     if app.windows.wild.as_ref().is_some_and(|w| w.shown == app.cmd) {
         return None;
     }
-    let (base, items) = crate::completion::complete_command_line(&app.cmd, &sources(app));
+    let (base, items, hints) = crate::completion::complete_with_hints(&app.cmd, &sources(app));
     let typed = &app.cmd[base.len().min(app.cmd.len())..];
     let rest = match items.first() {
         Some(f) if f.to_lowercase().starts_with(&typed.to_lowercase()) => f.chars().skip(typed.chars().count()).collect(),
         _ => String::new(),
     };
-    if items.is_empty() { None } else { Some((items, rest)) }
+    if items.is_empty() { None } else { Some((items, rest, hints)) }
 }
 
 // ---------------------------------------------------------------------------

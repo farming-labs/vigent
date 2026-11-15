@@ -19,6 +19,7 @@ pub mod cursor;
 pub mod custom;
 pub mod detect;
 pub mod gemini;
+pub mod handoff;
 pub mod opencode;
 pub mod permissions;
 pub mod pi;
@@ -400,12 +401,16 @@ pub struct Engines {
     pub new_effort: BTreeMap<String, String>,
     /// the environment engines run with (and detection reads)
     pub env: Env,
+    /// every engine's models with their names (`:race --models`, `:model <id>`, Tab): loaded once, when first needed
+    pub models: Option<handoff::ModelIndex>,
+    /// what waits for the models to load (select::with_models)
+    pub models_waiting: Option<Vec<Box<dyn FnOnce(&mut crate::app::App)>>>,
 }
 
 impl Default for Engines {
     fn default() -> Self {
         let env = detect::process_env();
-        Engines { infos: quick(&env), preferred: "auto", new_model: BTreeMap::new(), new_effort: BTreeMap::new(), env }
+        Engines { infos: quick(&env), preferred: "auto", new_model: BTreeMap::new(), new_effort: BTreeMap::new(), env, models: None, models_waiting: None }
     }
 }
 
@@ -433,7 +438,9 @@ pub fn model_text(a: &crate::session::Session) -> String {
     let name = engine_name(&a.engine);
     let engine = if a.engine != "pi" && model != name { format!("{name} · ") } else { String::new() };
     let effort = a.effort.as_ref().map(|e| format!(" · {e}")).unwrap_or_default();
-    format!("{engine}{model}{effort}")
+    // its name, when it moved to it from another engine
+    let named = a.model_name.as_ref().filter(|n| **n != model).map(|n| format!(" ({n})")).unwrap_or_default();
+    format!("{engine}{model}{named}{effort}")
 }
 
 #[cfg(test)]

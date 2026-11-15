@@ -629,6 +629,7 @@ export class CliSession extends Session {
 	setModel(model: string | undefined): void {
 		this.requestedModel = model && model !== "default" ? model : undefined;
 		this.model = this.requestedModel ?? ENGINE_NAMES[this.engine];
+		this.modelName = undefined;
 		this.emit();
 	}
 
@@ -739,7 +740,8 @@ export class CliSession extends Session {
 		this.aborted = false;
 		const attached = expandPrompt(text, this.adapter.id, this.cwd);
 		if (attached.skipped.length) this.pushInfo(`not attached: ${attached.skipped.join(", ")}`);
-		const args = this.adapter.args(attached.prompt, {
+		// the first prompt after a move from another engine carries the conversation so far
+		const args = this.adapter.args(this.takeHandoff() + attached.prompt, {
 			cwd: this.cwd,
 			files: attached.files,
 			model: this.requestedModel,
