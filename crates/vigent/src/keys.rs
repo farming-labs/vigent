@@ -855,6 +855,10 @@ pub enum LineRisk {
     Defines,
     /// :trust, :permissions allow
     Trust,
+    /// :w or :write with a file or ! (and :wq, :x)
+    Write,
+    /// :serve, except :serve stop
+    Serve,
     /// one of your commands whose steps are risky
     Command,
     /// vigent can't tell what the line is
@@ -867,6 +871,8 @@ impl LineRisk {
             LineRisk::Shell => "shell",
             LineRisk::Defines => "defines",
             LineRisk::Trust => "trust",
+            LineRisk::Write => "write",
+            LineRisk::Serve => "serve",
             LineRisk::Command => "command",
             LineRisk::Unknown => "unknown",
         }
@@ -909,9 +915,16 @@ fn defines(word: &str) -> bool {
         || abbrev(word, "so", "source")
 }
 
+/// Commands that write a file: :w and :write (and :wq and :x, which write in vim; vigent's only
+/// quit). Given a file or !, they can put the transcript over any file; a bare :w only makes a
+/// new <agent>.md here, and never overwrites one.
+fn writes(word: &str) -> bool {
+    matches!(word, "w" | "write" | "wq" | "x")
+}
+
 /// Whether a command line, run from a project's untrusted .vigent.toml, could
 /// run a program or change what runs: `:!cmd`, `:command`, `:nnoremap`,
-/// `:normal`, `:trust`, or one of your commands whose steps do.
+/// `:normal`, `:trust`, `:w! file`, `:serve`, or one of your commands whose steps do.
 /// `commands` gives the steps of each command a line could call by name. (src/keys.ts commandLineRisk)
 pub fn command_line_risk(line: &str, commands: &dyn Fn(&str) -> Vec<Vec<String>>, depth: usize) -> Option<LineRisk> {
     let s = strip_range(line);
@@ -928,6 +941,14 @@ pub fn command_line_risk(line: &str, commands: &dyn Fn(&str) -> Vec<Vec<String>>
     let allow = rest.starts_with(char::is_whitespace) && rest.trim_start().strip_prefix("allow").is_some_and(|r| r.is_empty() || r.starts_with(char::is_whitespace));
     if word == "trust" || (matches!(word.as_str(), "perm" | "perms" | "permission" | "permissions") && allow) {
         return Some(LineRisk::Trust);
+    }
+    let after = s[word.len()..].trim();
+    if writes(&word) && !after.is_empty() {
+        return Some(LineRisk::Write);
+    }
+    // :serve opens your agents to the network (:serve local, to this machine); :serve stop closes it
+    if word == "serve" && after != "stop" {
+        return Some(LineRisk::Serve);
     }
     let user = name.chars().next().is_some_and(|c| c.is_ascii_uppercase()) && name.chars().all(|c| c.is_ascii_alphanumeric());
     if !user {
@@ -1308,6 +1329,46 @@ mod tests {
             assert!(risky(rhs.clone()).is_empty(), "{rhs:?}");
         }
         assert_eq!(command_line_risk("Land", &|_| vec![], 0), None, "a command nobody defines runs nothing");
+    }
+
+    #[test]
+    fn writing_a_file_and_serve_are_risky() {
+        let none = |_: &str| -> Vec<Vec<String>> { vec![] };
+        let risk = |line: &str| command_line_risk(line, &none, 0);
+        // :w writes the transcript over any file it names (:w! even over one that's there)
+        for line in ["w ~/.bashrc", "w! ~/.bashrc", "w!", "write ~/.bashrc", "write! x.md", "write!", ":w x", " w  ../x ", "%w x", "wq x", "wq!", "x x", "x!"] {
+            assert_eq!(risk(line), Some(LineRisk::Write), "{line}");
+        }
+        // :serve opens your agents to the network, :serve local to this machine
+        for line in ["serve", "serve local", "serve 9000", "serve local 9000", ":serve", "serve stop now", "serve {args}"] {
+            assert_eq!(risk(line), Some(LineRisk::Serve), "{line}");
+        }
+        // a bare :w only makes a new <agent>.md here and never overwrites one; :serve stop only closes it
+        for line in ["w", ":w", " w ", "write", "wq", "x", "serve stop", "serve  stop ", "wincmd w", "wa", "wqa", "xa", "Write x", "server", "sp x"] {
+            assert_eq!(risk(line), None, "{line}");
+        }
+        // mappings that run them, and commands whose steps do
+        let s = |v: &str| RhsValue::Str(v.into());
+        let commands = |name: &str| -> Vec<Vec<String>> {
+            let steps: &[&str] = match name {
+                "Save" => &["w! {args}"],
+                "Share" => &["serve local"],
+                "Keep" => &["w"],
+                "Stop" => &["serve stop"],
+                _ => return vec![],
+            };
+            vec![steps.iter().map(|x| x.to_string()).collect()]
+        };
+        let risky = |rhs: RhsValue| -> Vec<String> { mapping_risks(KeyMode::Normal, &rhs, DEFAULT_LEADER, &commands).into_iter().map(|(l, r)| format!("{}: {l}", r.name())).collect() };
+        assert_eq!(risky(s(":w! ~/.bashrc<CR>")), ["write: w! ~/.bashrc"]);
+        assert_eq!(risky(s("q:write x.md<CR>")), ["write: write x.md"]);
+        assert_eq!(risky(s(":serve<CR>")), ["serve: serve"]);
+        assert!(risky(s(":w<CR>")).is_empty());
+        assert!(risky(s(":serve stop<CR>")).is_empty());
+        assert_eq!(risky(s(":Save<CR>")), ["command: Save"], "w! with no file still overwrites <agent>.md");
+        assert_eq!(risky(s(":Share<CR>")), ["command: Share"]);
+        assert!(risky(s(":Keep<CR>")).is_empty());
+        assert!(risky(s(":Stop<CR>")).is_empty());
     }
 
     #[test]
