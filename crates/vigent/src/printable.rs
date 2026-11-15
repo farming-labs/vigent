@@ -1,10 +1,11 @@
 //! An agent's text made safe to draw inside a window (src/printable.ts):
 //! a terminal acts on control characters instead of showing them, so tabs
 //! become two spaces, a lone `\r` keeps what came after it (what a progress
-//! bar ends up showing), and every escape sequence and control character is
-//! dropped. (The TypeScript keeps colors and links in the string; here text
-//! is styled by spans, so they go too.) And `one_row`: a screen row as the
-//! terminal must get it (src/app.ts oneRow).
+//! bar ends up showing), and every escape sequence, control character (C0,
+//! DEL, C1) and bidi control is dropped. (The TypeScript keeps colors in the
+//! string; here text is styled by spans, so they go too: this is its
+//! plainText.) And `one_row`: a screen row as the terminal must get it
+//! (src/app.ts oneRow).
 
 /// Text with no escape sequences or control characters but newlines.
 pub fn printable(text: &str) -> String {
@@ -35,7 +36,12 @@ pub fn printable(text: &str) -> String {
 
 fn is_control(c: char) -> bool {
     let n = c as u32;
-    (n <= 0x1f && c != '\n') || (0x7f..=0x9f).contains(&n)
+    (n <= 0x1f && c != '\n') || (0x7f..=0x9f).contains(&n) || is_bidi(c)
+}
+
+/// The bidi controls, which reorder what a row shows.
+fn is_bidi(c: char) -> bool {
+    matches!(c, '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
 }
 
 /// CSI, OSC, DCS/SOS/PM/APC strings and two-byte escapes, removed.
@@ -123,5 +129,15 @@ mod tests {
         assert_eq!(printable("\x1b[31mred\x1b[0m\r\n\x1b]8;;http://x\x07link\x1b]8;;\x07"), "red\nlink");
         assert_eq!(printable("a\x1b[2Kb\x07c"), "abc");
         assert_eq!(one_row("cat <<EOF\nmulti\tx\r"), "cat <<EOF multi x ");
+    }
+
+    #[test]
+    fn links_c1_and_bidi_go() {
+        // a link's text stays, never its target; C1 can't end one early and start an OSC 52
+        assert_eq!(printable("\x1b]8;;file:///etc/passwd\x07https://github.com\x1b]8;;\x07"), "https://github.com");
+        assert_eq!(printable("\x1b]8;;http://a\u{9c}\u{9d}52;c;aGFja2Vk\x07after"), "after");
+        assert_eq!(printable("\u{9d}52;c;aGk=\u{9c}"), "52;c;aGk=");
+        assert_eq!(printable("abc\u{202e}dcba\u{2066}x\u{200f}"), "abcdcbax");
+        assert_eq!(printable("\x1b[8mhidden\x1b[0m"), "hidden");
     }
 }
