@@ -21,14 +21,14 @@ import * as path from "node:path";
 import { parse as parseToml } from "smol-toml";
 import { EFFORTS } from "./choices.js";
 import { parseTemplates, type Template } from "./templates.js";
-import { type CommandInfos, parseCommands, type UserCommands } from "./commands.js";
+import { type CommandInfos, commandSteps, parseCommands, type UserCommands } from "./commands.js";
 import { HOOK_NAMES, type HookName, type Hooks } from "./hooks.js";
 import { defaultLayout, type Layout, parseSections, STATUSLINE_PARTS, WINBAR_PARTS } from "./layout.js";
 import { parseStyle, type StyleSpec } from "./style.js";
 import { ICON_SETS, type IconSet } from "./icons.js";
 import { CUSTOM_ENGINES, type CustomEngine, ENGINE_IDS, type EngineId, isEngineId, registerCustomEngine } from "./engines.js";
 import { WORKTREE_BACKENDS, type WorktreeBackend } from "./riftri.js";
-import { KEY_MODES, type KeyMode } from "./keys.js";
+import { KEY_MODES, type KeyMode, leaderOrDefault, mappingRisks } from "./keys.js";
 import { type Attr, configDir, normalizeGroups } from "./theme.js";
 import { DEFAULT_WORKTREE, type WorktreeConfig } from "./worktree.js";
 
@@ -97,7 +97,8 @@ export interface LoadOptions {
 	base?: Config;
 	/**
 	 * false: leave out what runs programs (hooks, engine args, Claude Code
-	 * permission rules) and name it in `gated`. A project file counts only once trusted.
+	 * permission rules, mappings that can run a shell command or define commands
+	 * or mappings) and name it in `gated`. A project file counts only once trusted.
 	 */
 	trusted?: boolean;
 	/** how warnings name the file ("config" or ".vigent.toml") */
@@ -134,6 +135,8 @@ export function loadConfig(file = configPath(), opts: LoadOptions = {}): { confi
 	const gated: string[] = [];
 	const where = opts.label ?? "config";
 	const mayRun = opts.trusted !== false;
+	/** [keys] mappings, applied once the whole file is read */
+	const keys: [KeyMode, string, unknown][] = [];
 	if (!fs.existsSync(file)) return { config, warnings, gated };
 
 	let raw: Record<string, unknown>;
@@ -254,12 +257,12 @@ export function loadConfig(file = configPath(), opts: LoadOptions = {}): { confi
 				}
 				for (const [k, v] of Object.entries(value)) {
 					if ((KEY_MODES as string[]).includes(k) && v && typeof v === "object" && !Array.isArray(v)) {
-						config.keys[k as KeyMode] = { ...config.keys[k as KeyMode], ...(v as Record<string, unknown>) };
+						for (const [lhs, rhs] of Object.entries(v)) keys.push([k as KeyMode, lhs, rhs]);
 					} else if ((KEY_MODES as string[]).includes(k)) {
 						warnings.push(`${where}: [keys.${k}] should be a table`);
 					} else {
 						// keys directly under [keys] are normal-mode mappings
-						config.keys.normal = { ...config.keys.normal, [k]: v };
+						keys.push(["normal", k, v]);
 					}
 				}
 				break;
@@ -287,6 +290,17 @@ export function loadConfig(file = configPath(), opts: LoadOptions = {}): { confi
 			default:
 				warnings.push(`${where}: unknown key '${key}'`);
 		}
+	}
+	// last, once the leader and [commands] are read: a project's mapping that can run a shell
+	// command, or define commands or mappings, waits for :trust like the rest
+	const commands = mayRun ? {} : commandSteps(raw.commands);
+	const leader = leaderOrDefault(config.leader);
+	for (const [mode, lhs, rhs] of keys) {
+		if (!mayRun && mappingRisks(mode, rhs, { leader, commands: (n) => [commands[n], config.commands[n]].filter((c) => c !== undefined) }).length) {
+			gated.push(`keys.${mode}.${lhs}`);
+			continue;
+		}
+		config.keys[mode] = { ...config.keys[mode], [lhs]: rhs };
 	}
 	return { config, warnings, gated };
 }

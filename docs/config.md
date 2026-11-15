@@ -411,7 +411,7 @@ Commands other people shared are in the [registry](registry.md): `vigent add --l
 
 A `.vigent.toml` at the root of a repository is read on top of your `~/.config/vigent/config.toml`, so a team can commit its theme, templates, engine, worktree layout, keys and hooks once. Where both set something, the project wins; tables merge key by key (setting `model` under `[engines.claude]` keeps your `effort`).
 
-The parts that run programs only count once you trust the file: `[hooks]`, `args` under `[engines.*]`, the `command` of [your own engines](#your-own-engines), [commands](#commands) with a shell step, and Claude Code's `allow` rules. Until then vigent says what's waiting (`.vigent.toml wants to run commands (hooks.worktree_created): :trust allows them`) and uses the rest. Trust it with **`:trust`** in vigent or **`vigent trust`** in the project. Trust is for the file as it is: when it changes, vigent asks again. Your own config.toml is always trusted.
+The parts that run programs only count once you trust the file: `[hooks]`, `args` under `[engines.*]`, the `command` of [your own engines](#your-own-engines), [commands](#commands) with a shell step, Claude Code's `allow` rules, and [mappings](#a-projects-mappings) that can run shell commands or define commands or mappings. Until then vigent says what's waiting (`.vigent.toml wants to run commands (hooks.worktree_created, keys.normal.j): :trust allows them`) and uses the rest. Trust it with **`:trust`** in vigent or **`vigent trust`** in the project. Trust is for the file as it is: when it changes, vigent asks again. Your own config.toml is always trusted.
 
 ## `[hooks]`
 
@@ -467,6 +467,18 @@ Keys use vim's notation, so mappings can be copied from a vimrc:
 | `false` or `"<Nop>"` | `q = false` | the key does nothing |
 
 When the right-hand side is other keys, they always get their built-in meaning, the way vim's `noremap` works. That makes swaps like `j = "k"` and `k = "j"` safe: neither one loops back to your own mappings.
+
+### A project's mappings
+
+In a project's `.vigent.toml`, a mapping that can run a shell command, or define commands or mappings, waits for [`:trust`](#a-projects-own-config-vigenttoml) like the project's hooks do. vigent works out every command line the right-hand side can run, however it gets there: `":!make<CR>"`, raw keys like `"q:!make<CR>"`, a list like `[":", "!make", "<CR>"]`, a `[keys.command]` mapping that types `!make<CR>`, or INSERT's `"<Esc>:!make<CR>"`. A mapping waits when one of those lines
+
+- is a shell command (`:!make`, `:%!sort`),
+- defines or replays: `:command`, `:delcommand`, `:map`, `:nnoremap` and the rest, `:normal`, `:execute`, `:source`,
+- trusts or allows: `:trust`, `:permissions allow`,
+- calls a command whose steps do one of these, or
+- can't be told apart, because the mapping moves the cursor, completes, or recalls history before it presses Enter.
+
+Until then the key keeps its built-in meaning, and vigent names it in the trust message as `keys.<mode>.<lhs>`, e.g. `keys.normal.j`. Mappings like `":colorscheme nord<CR>"`, `":new "` and `"session.next"` apply right away. Your own config.toml maps what it likes.
 
 ### Multi-key mappings and `timeoutlen`
 

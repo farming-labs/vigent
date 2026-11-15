@@ -38,11 +38,11 @@ process.on("exit", () => fs.rmSync(process.env.XDG_CONFIG_HOME, { recursive: tru
 
 const dist = (f) => import(pathToFileURL(path.join(root, "dist", f)).href);
 const { loadConfig } = await dist("config.js");
-const { buildKeymap } = await dist("keys.js");
+const { buildKeymap, leaderOrDefault, mappingRisks } = await dist("keys.js");
 const { BUILTIN_THEMES, buildTheme, normalizeGroups, Painter } = await dist("theme.js");
 const { parseStyle } = await dist("style.js");
 const { CUSTOM_ENGINES, ENGINE_BINS, ENGINE_IDS } = await dist("engines.js");
-const { normalizeStep } = await dist("commands.js");
+const { commandSteps, normalizeStep } = await dist("commands.js");
 
 export const KINDS = ["theme", "template", "keymap", "command", "engine", "setup"];
 /** lowercase words joined by -, as in a URL */
@@ -79,16 +79,32 @@ export function shellWords(args) {
 	return args.map((a) => (/^[\w@%+=:,./{}<>-]+$/.test(a) ? a : `'${a.replace(/'/g, `'\\''`)}'`)).join(" ");
 }
 
+/** A mapping in the file: [keys.<mode>] lhs, or lhs directly under [keys] (NORMAL). */
+const rawMapping = (raw, mode, lhs) => (isTable(raw.keys?.[mode]) && lhs in raw.keys[mode] ? raw.keys[mode][lhs] : raw.keys?.[lhs]);
+
+/** The risky command lines a mapping in the file runs, read the way vigent's trust check reads them. */
+export function mappingRisksIn(raw, mode, rhs) {
+	const steps = commandSteps(raw.commands);
+	const leader = typeof raw.leader === "string" ? raw.leader : typeof raw.mapleader === "string" ? raw.mapleader : undefined;
+	return mappingRisks(mode, rhs, { leader: leaderOrDefault(leader), commands: (n) => (steps[n] ? [steps[n]] : []) });
+}
+
 /**
  * What a config file runs: every part vigent holds back until a project file is
  * trusted (hooks, commands with a shell step, engine commands and arguments,
- * Claude Code allow rules), with the command or rule each one adds.
+ * Claude Code allow rules, mappings that run a shell command or one of those
+ * commands), with the command or rule each one adds.
  */
 export function runsOf(raw, gated) {
 	const out = [];
 	for (const from of gated) {
 		const [top, id, key] = from.split(".");
-		if (top === "hooks") out.push({ from, command: String(raw.hooks[id]).trim() });
+		if (top === "keys") {
+			// keys.<mode>.<lhs> (the lhs may have dots of its own): each command line it runs, without the :
+			const rhs = rawMapping(raw, id, from.slice(`keys.${id}.`.length));
+			const lines = mappingRisksIn(raw, id, rhs).map((r) => r.line.trim().replace(/^:+\s*/, "")).filter(Boolean);
+			for (const command of lines.length ? lines : [JSON.stringify(rhs)]) out.push({ from, command });
+		} else if (top === "hooks") out.push({ from, command: String(raw.hooks[id]).trim() });
 		else if (top === "commands") {
 			const c = raw.commands[id];
 			for (const step of [isTable(c) ? c.run : c].flat()) {
@@ -239,9 +255,14 @@ function checkShape(kind, name, raw, problems) {
 	if (kind === "keymap") {
 		for (const [mode, table] of Object.entries(raw.keys)) {
 			for (const [lhs, rhs] of Object.entries(isTable(table) ? table : { [mode]: table })) {
-				// :command defines a command that can run a shell step: that's for setups, which wait for :trust
-				const steps = [rhs].flat().filter((s) => typeof s === "string");
-				if (steps.some((s) => /(^|<CR>|<cr>|\|)\s*:\s*com(m(a(nd?)?)?)?!?\s/.test(s))) problems.push(`[keys.${mode}] "${lhs}": a keymap can't define commands (a setup's [commands] can)`);
+				// a shell step is listed in runs; what defines commands or mappings, replays keys, or
+				// changes what's trusted would hide what runs: that's for setups, which wait for :trust
+				const where = isTable(table) ? `[keys.${mode}] "${lhs}"` : `[keys] "${lhs}"`;
+				for (const { line, risk } of mappingRisksIn(raw, isTable(table) ? mode : "normal", rhs)) {
+					if (risk === "defines") problems.push(`${where}: a keymap can't define commands or mappings, or replay keys (:${line}): a setup's [commands] can`);
+					else if (risk === "trust") problems.push(`${where}: a keymap can't trust a project or allow Claude Code rules (:${line})`);
+					else if (risk === "unknown") problems.push(`${where}: vigent can't tell what this mapping runs (it moves the cursor, completes or recalls history on the command line): write the command out`);
+				}
 			}
 		}
 		return;

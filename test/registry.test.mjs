@@ -63,8 +63,9 @@ test("a command entry: [commands.<Name>] tables with descriptions, [keys.*] that
 	const index = buildIndex().index;
 	const land = index.entries.find((e) => e.name === "land");
 	assert.equal(land.kind, "command");
-	assert.deepEqual(land.runs.map((r) => r.from), ["commands.Land"]);
+	assert.deepEqual(land.runs.map((r) => r.from), ["commands.Land", "keys.normal.<leader>L"]);
 	assert.match(land.runs[0].command, /cargo test.*npm test; fi$/);
+	assert.equal(land.runs[1].command, "Land", "<leader>L runs :Land, a shell command");
 	assert.deepEqual(index.entries.find((e) => e.name === "review-flow").runs, [], "ex steps only: data only");
 	assert.deepEqual(index.entries.find((e) => e.name === "switch").runs, []);
 
@@ -76,8 +77,9 @@ test("a command entry: [commands.<Name>] tables with descriptions, [keys.*] that
 		[
 			{ from: "commands.Ship", command: "npm test" },
 			{ from: "commands.Ship", command: "npm run build" },
+			{ from: "keys.normal.<leader>S", command: "Ship" },
 		],
-		"every shell step, from the file",
+		"every shell step, from the file, and the mapping that runs them",
 	);
 	assert.ok(problems("Bad_Name", ok).some((p) => /'Bad_Name' isn't a name/.test(p)), "the entry's name");
 	assert.ok(problems("x", '[commands.ship]\nrun = "pr"\ndescription = "d"\n').some((p) => /'ship' should start with a capital letter/.test(p)), "vigent's own warning for a lowercase command");
@@ -96,6 +98,25 @@ test("a command entry: [commands.<Name>] tables with descriptions, [keys.*] that
 	);
 	// a keymap alone still can't define commands
 	assert.ok(checkEntry("keymap", "x", { "entry.toml": '[commands.Ship]\nrun = "pr"\ndescription = "d"\n', "meta.toml": META }).problems.some((p) => /a keymap entry has only \[keys.\*\], not 'commands'/.test(p)));
+});
+
+test("a keymap that runs a shell command says so; one that defines commands or mappings is rejected", () => {
+	const check = (entry) => checkEntry("keymap", "x", { "entry.toml": entry, "meta.toml": META });
+	const shell = check('[keys.normal]\n"<leader>x" = ":!x<CR>"\n"<leader>y" = "q:!make test<CR>"\n"<leader>c" = ":colorscheme nord<CR>"\n[keys.command]\n"<C-x>" = "!y<CR>"\n');
+	assert.deepEqual(shell.problems, []);
+	assert.deepEqual(shell.entry.runs, [
+		{ from: "keys.normal.<leader>x", command: "!x" },
+		{ from: "keys.normal.<leader>y", command: "!make test" },
+		{ from: "keys.command.<C-x>", command: "!y" },
+	]);
+	assert.deepEqual(runsOf({ keys: { "a.b": ":!x<CR>" } }, ["keys.normal.a.b"]), [{ from: "keys.normal.a.b", command: "!x" }], "a dot in the key, under [keys]");
+
+	const problems = (rhs) => check(`[keys.normal]\n"<leader>x" = ${JSON.stringify(rhs)}\n`).problems;
+	for (const rhs of [":nnoremap j :!x<CR>", "q:nmap j :!x<CR>", ":command! X !y<CR>", ":normal ihi<CR>", ":execute 'x'<CR>", ":source evil.vim<CR>", ":delcommand Land<CR>"]) {
+		assert.match(problems(rhs).join("\n"), /\[keys.normal\] "<leader>x": a keymap can't define commands or mappings, or replay keys \(:/, rhs);
+	}
+	assert.match(problems(":trust<CR>").join("\n"), /a keymap can't trust a project or allow Claude Code rules \(:trust\)/);
+	assert.match(problems("q:kill<Home>!<CR>").join("\n"), /vigent can't tell what this mapping runs/);
 });
 
 test("a bad entry is rejected with every problem listed", () => {

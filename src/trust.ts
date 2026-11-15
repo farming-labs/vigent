@@ -4,7 +4,8 @@
  * A project config can set the theme, templates, keys and worktree layout
  * freely. The parts that run programs (hooks, engine arguments, custom
  * engine commands, shell commands under [commands], Claude Code
- * permission rules) only count once you trust that file, like direnv's
+ * permission rules, and mappings that can run a shell command or define
+ * commands or mappings) only count once you trust that file, like direnv's
  * `allow`: `:trust` in vigent, or `vigent trust` in the project. Trust is
  * for the file as it is now; if it changes, vigent asks again.
  */
@@ -15,6 +16,7 @@ import * as path from "node:path";
 import type { App } from "./app.js";
 import { type Config, loadConfig, PROJECT_CONFIG } from "./config.js";
 import { type EngineId, quickEngines } from "./engines.js";
+import { KEY_MODES } from "./keys.js";
 import { parse as parseToml } from "smol-toml";
 
 function stateFile(): string {
@@ -60,7 +62,8 @@ export interface TrustSyncContext {
  * 2. Persists trust via trustFile().
  * 3. Reloads and merges trusted configuration into config.
  * 4. Synchronizes all runtime components: hooks, layout, styles, commands,
- *    engineOptions, permissions, new-agent model/effort defaults, and engine discovery.
+ *    engineOptions, permissions, new-agent model/effort defaults, engine discovery,
+ *    and the mappings that waited for :trust.
  */
 export function executeProjectTrust(ctx: TrustSyncContext): string {
 	const { app, config, projectFile, reloadPermissions } = ctx;
@@ -85,7 +88,20 @@ export function executeProjectTrust(ctx: TrustSyncContext): string {
 	const { gated } = loadConfig(projectFile, { trusted: false, label: PROJECT_CONFIG });
 
 	trustFile(projectFile, content);
+	const keysBefore = Object.fromEntries(KEY_MODES.map((m) => [m, { ...config.keys[m] }]));
 	loadConfig(projectFile, { base: config, trusted: true, label: PROJECT_CONFIG });
+
+	// the mappings that waited for :trust work now
+	for (const mode of KEY_MODES) {
+		for (const [lhs, rhs] of Object.entries(config.keys[mode] ?? {})) {
+			if (JSON.stringify(rhs) === JSON.stringify(keysBefore[mode][lhs])) continue;
+			try {
+				app.keymap.set(mode, lhs, rhs);
+			} catch {
+				// a bad mapping: vigent warned about it at startup
+			}
+		}
+	}
 
 	app.hooks = config.hooks;
 	app.layout = config.layout;

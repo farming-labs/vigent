@@ -3,7 +3,8 @@
 //! A project config can set the theme, templates, keys and worktree layout
 //! freely. The parts that run programs (hooks, engine arguments, custom
 //! engine commands, shell commands under [commands], Claude Code permission
-//! rules) only count once you trust that file, like direnv's `allow`:
+//! rules, and mappings that can run a shell command or define commands or
+//! mappings) only count once you trust that file, like direnv's `allow`:
 //! `:trust` in vigent, or `vigent trust` in the project. Trust is for the file
 //! as it is now (its sha256, in $XDG_STATE_HOME/vigent/trusted.json); if it
 //! changes, vigent asks again.
@@ -12,6 +13,7 @@ use std::path::{Path, PathBuf};
 
 use crate::app::App;
 use crate::config::{self, LoadOptions, PROJECT_CONFIG};
+use crate::keys::{KEY_MODES, KeyMode, Keymap, RhsValue};
 
 fn state_file() -> PathBuf {
     let base = std::env::var_os("XDG_STATE_HOME")
@@ -120,7 +122,10 @@ pub fn execute_project_trust(app: &mut App) -> String {
         return format!("can't trust {PROJECT_CONFIG}: {e}");
     }
     let base = std::mem::take(&mut app.config);
+    let keys_before = base.keys.clone();
     app.config = config::load_str(&content, PROJECT_CONFIG, LoadOptions { base: Some(base), trusted: true, label: PROJECT_CONFIG }).config;
+    // the mappings that waited for :trust work now
+    apply_new_mappings(&mut app.keymap, &keys_before, &app.config.keys);
     // the commands that waited for :trust run now (alongside any you defined with :command)
     if app.windows.commands_loaded {
         for g in gated.iter().filter_map(|g| g.strip_prefix("commands.")) {
@@ -134,6 +139,25 @@ pub fn execute_project_trust(app: &mut App) -> String {
     }
     crate::permissions::reload(app);
     if gated.is_empty() { format!("trusted {PROJECT_CONFIG}") } else { format!("trusted {PROJECT_CONFIG}: {} now run", gated.join(", ")) }
+}
+
+/// Map what changed between two configs' [keys] (`after` is `before` with a file's mappings added).
+fn apply_new_mappings(keymap: &mut Keymap, before: &[(KeyMode, String, RhsValue)], after: &[(KeyMode, String, RhsValue)]) {
+    let last = |keys: &[(KeyMode, String, RhsValue)], mode: KeyMode, lhs: &str| keys.iter().rev().find(|(m, l, _)| *m == mode && l == lhs).map(|(_, _, r)| r.clone());
+    for mode in KEY_MODES {
+        let mut seen: Vec<&str> = vec![];
+        for (m, lhs, _) in after.get(before.len()..).unwrap_or_default() {
+            if *m != mode || seen.contains(&lhs.as_str()) {
+                continue;
+            }
+            seen.push(lhs);
+            let was = last(before, mode, lhs);
+            if let Some(now) = last(after, mode, lhs).filter(|now| was.as_ref() != Some(now)) {
+                // a bad mapping: vigent warned about it at startup
+                let _ = keymap.set(mode, lhs, &now);
+            }
+        }
+    }
 }
 
 /// `vigent trust`, in the project.
@@ -166,6 +190,24 @@ pub fn command(_args: &[String]) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trust_maps_what_waited() {
+        let project = "[keys.normal]\nj = \":!touch pwned<CR>\"\nK = \":colorscheme nord<CR>\"\n";
+        let mine = config::load_str("[keys.normal]\nQ = \":!touch mine<CR>\"\n", "config.toml", LoadOptions::default()).config;
+        let untrusted = config::load_str(project, PROJECT_CONFIG, LoadOptions { base: Some(mine), trusted: false, label: PROJECT_CONFIG });
+        assert_eq!(untrusted.gated, ["keys.normal.j"]);
+        let (mut keymap, warnings) = crate::keys::build_keymap(None, &untrusted.config.keys);
+        assert!(warnings.is_empty());
+        let j = |km: &Keymap| km.lookup(KeyMode::Normal, &["j".into()], false).exact.map(|b| b.rhs_text);
+        assert_eq!(j(&keymap).as_deref(), Some("scroll.down"), "j scrolls, as built in");
+        assert!(keymap.lookup(KeyMode::Normal, &["K".into()], false).exact.is_some_and(|b| b.user), "the safe one is mapped");
+        let before = untrusted.config.keys.clone();
+        let trusted = config::load_str(project, PROJECT_CONFIG, LoadOptions { base: Some(untrusted.config), trusted: true, label: PROJECT_CONFIG });
+        assert!(trusted.gated.is_empty());
+        apply_new_mappings(&mut keymap, &before, &trusted.config.keys);
+        assert_eq!(j(&keymap).as_deref(), Some(":!touch pwned<CR>"), ":trust maps it");
+    }
 
     #[test]
     fn sha256_matches_node() {

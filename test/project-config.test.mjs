@@ -311,3 +311,102 @@ test("the real vigent: warns about an untrusted .vigent.toml, :trust makes its h
 	const out = execFileSync(process.execPath, [path.join(import.meta.dirname, "..", "dist", "cli.js"), "trust"], { cwd: repo, env: { ...env, XDG_STATE_HOME: path.join(tmp, "state-cli") }, encoding: "utf8" });
 	assert.match(out, /trusted .*\.vigent\.toml: engines\.claude\.allow, hooks\.worktree_created will run/);
 });
+
+test("a project's mappings that can run a shell command, or define commands or mappings, wait for :trust", () => {
+	const mine = write("keys-home/config.toml", `[commands]\nTest = "!npm test"\nHi = "queue hi"\n`);
+	const project = write(
+		"keys-repo/.vigent.toml",
+		[
+			"[commands]",
+			'Deploy = "!./deploy.sh"',
+			"[keys.normal]",
+			'j = ":!touch pwned<CR>"',
+			'k = ":colorscheme nord<CR>"',
+			'q = "q:!x<CR>"',
+			'"<leader>d" = ":Deploy<CR>"',
+			'"<leader>t" = ":Test<CR>"',
+			'"<leader>h" = ":Hi<CR>"',
+			'"<leader>n" = ":new "',
+			'"<leader>m" = ":nnoremap x :!y<CR>"',
+			"[keys.insert]",
+			'jk = "<Esc>:!x<CR>"',
+			'"<C-s>" = "edit.submit"',
+			"[keys.command]",
+			'"<C-x>" = "!x<CR>"',
+			"[keys]",
+			'Q = [":", "command X !y", "<CR>"]',
+			"",
+		].join("\n"),
+	);
+	const untrusted = loadConfig(project, { base: loadConfig(mine).config, trusted: false, label: PROJECT_CONFIG });
+	assert.deepEqual(untrusted.gated, [
+		"commands.Deploy",
+		"keys.normal.j",
+		"keys.normal.q",
+		"keys.normal.<leader>d",
+		"keys.normal.<leader>t",
+		"keys.normal.<leader>m",
+		"keys.insert.jk",
+		"keys.command.<C-x>",
+		"keys.normal.Q",
+	]);
+	assert.deepEqual(untrusted.config.keys, {
+		normal: { k: ":colorscheme nord<CR>", "<leader>h": ":Hi<CR>", "<leader>n": ":new " },
+		insert: { "<C-s>": "edit.submit" },
+	}, "the safe ones still apply");
+	assert.deepEqual(untrusted.warnings, []);
+
+	const trusted = loadConfig(project, { base: loadConfig(mine).config, trusted: true, label: PROJECT_CONFIG });
+	assert.deepEqual(trusted.gated, []);
+	assert.equal(trusted.config.keys.normal.j, ":!touch pwned<CR>");
+	assert.equal(trusted.config.keys.command["<C-x>"], "!x<CR>");
+
+	// your own config.toml maps what it likes
+	const own = loadConfig(write("keys-home/own.toml", `[keys.normal]\nj = ":!touch mine<CR>"\nQ = ":nnoremap x :!y<CR>"\n`));
+	assert.deepEqual(own.gated, []);
+	assert.deepEqual(own.config.keys.normal, { j: ":!touch mine<CR>", Q: ":nnoremap x :!y<CR>" });
+});
+
+test("the trust message names a mapping that waits, and :trust maps it", () => {
+	const { app } = makeApp();
+	const config = loadConfig(write("keytrust-home/config.toml", "")).config;
+	const projectFile = write("keytrust-repo/.vigent.toml", `[keys.normal]\nj = ":!touch pwned<CR>"\nK = ":colorscheme nord<CR>"\n`);
+	const untrusted = loadConfig(projectFile, { base: config, trusted: false, label: PROJECT_CONFIG });
+	assert.deepEqual(untrusted.gated, ["keys.normal.j"]);
+	// as vigent starts: your config, then the project's, then the keymap from both
+	for (const [lhs, rhs] of Object.entries(config.keys.normal)) app.keymap.set("normal", lhs, rhs);
+	const ran = [];
+	app.hookRunner = (cmd) => {
+		ran.push(cmd);
+		return Promise.resolve({ ok: true, code: 0, output: "", ms: 1 });
+	};
+	app.handleInput("j");
+	assert.deepEqual(ran, [], "j scrolls, as built in");
+	assert.equal(app.keymap.lookup("normal", ["K"]).exact?.rhsText, ":colorscheme nord<CR>");
+	assert.equal(executeProjectTrust({ app, config, projectFile }), "trusted .vigent.toml: keys.normal.j now run");
+	app.handleInput("j");
+	assert.deepEqual(ran, ["touch pwned"]);
+});
+
+test("the real vigent: a project's mapping that runs a shell command waits for :trust", { timeout: 60000 }, async () => {
+	const repo = path.join(tmp, "cloned");
+	fs.mkdirSync(repo);
+	execFileSync("git", ["init", "-q"], { cwd: repo });
+	fs.writeFileSync(path.join(repo, ".vigent.toml"), `[keys.normal]\nj = ":!touch pwned<CR>"\n`);
+	const pwned = path.join(repo, "pwned");
+	const env = { ...process.env, XDG_STATE_HOME: path.join(tmp, "state-keys"), XDG_CONFIG_HOME: path.join(tmp, "cfg-keys"), TERM: "xterm-256color" };
+	const t = new Tty([], { cwd: repo, env, cols: 140, rows: 30 });
+	try {
+		await t.waitFor(/\.vigent\.toml wants to run commands \(keys\.normal\.j\): :trust allows them/);
+		await t.type("jjj");
+		await tick(1500);
+		assert.equal(fs.existsSync(pwned), false, "j ran nothing before :trust");
+		await t.type(":trust\r");
+		await t.waitFor(/trusted \.vigent\.toml: keys\.normal\.j now run/);
+		await t.type("j");
+		await t.waitFor(/:!touch pwned: done/);
+		assert.equal(fs.existsSync(pwned), true, "after :trust, j runs it");
+	} finally {
+		t.kill();
+	}
+});

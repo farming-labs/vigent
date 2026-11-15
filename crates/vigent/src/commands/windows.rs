@@ -335,11 +335,12 @@ fn is_user_command(name: &str) -> bool {
 }
 
 /// One step of a command: ":new x" → "new x"; "!npm test" stays a shell command.
-fn normalize_step(step: &str) -> String {
+pub fn normalize_step(step: &str) -> String {
     step.trim().trim_start_matches(':').trim_start().to_string()
 }
 
-fn fill_args(step: &str, args: &str) -> String {
+/// Fill in what was typed after the name ({args} or <args>).
+pub fn fill_args(step: &str, args: &str) -> String {
     step.replace("{args}", args).replace("<args>", args)
 }
 

@@ -11,7 +11,8 @@
 //!
 //! A project's .vigent.toml layers over yours (`LoadOptions::base`); until it's
 //! trusted, what runs programs (hooks, engine args and commands, Claude Code
-//! permission rules, shell commands) is left out and named in `gated`.
+//! permission rules, shell commands, mappings that can run a shell command or
+//! define commands or mappings) is left out and named in `gated`.
 //!
 //! EXTENSION POINT (Config area): a new top-level key is a match arm in
 //! [`load_str`]; a new [ui] option is a line in [`UI_ALIASES`] and an arm in
@@ -348,6 +349,8 @@ pub fn load_str(text: &str, file_name: &str, opts: LoadOptions) -> Loaded {
     let mut gated = vec![];
     let w = opts.label;
     let may_run = opts.trusted;
+    // [keys] mappings, applied once the whole file is read
+    let mut keys: Vec<(KeyMode, String, RhsValue)> = vec![];
     let mut raw = match parse_toml(text) {
         Ok(r) => r,
         Err(e) => return Loaded { config, warnings: vec![format!("{file_name}: {e}")], gated },
@@ -409,10 +412,10 @@ pub fn load_str(text: &str, file_name: &str, opts: LoadOptions) -> Loaded {
                 };
                 for (k, v) in t {
                     match (KeyMode::from_name(k), v) {
-                        (Some(mode), Val::Table(maps)) => config.keys.extend(maps.iter().map(|(lhs, r)| (mode, lhs.clone(), rhs(r)))),
+                        (Some(mode), Val::Table(maps)) => keys.extend(maps.iter().map(|(lhs, r)| (mode, lhs.clone(), rhs(r)))),
                         (Some(_), _) => warnings.push(format!("{w}: [keys.{k}] should be a table")),
                         // keys directly under [keys] are normal-mode mappings
-                        (None, _) => config.keys.push((KeyMode::Normal, k.clone(), rhs(v))),
+                        (None, _) => keys.push((KeyMode::Normal, k.clone(), rhs(v))),
                     }
                 }
             }
@@ -448,7 +451,37 @@ pub fn load_str(text: &str, file_name: &str, opts: LoadOptions) -> Loaded {
             _ => warnings.push(format!("{w}: unknown key '{key}'")),
         }
     }
+    // last, once the leader and [commands] are read: a project's mapping that can run a shell
+    // command, or define commands or mappings, waits for :trust like the rest
+    let steps = if may_run { vec![] } else { command_steps(raw.iter().find(|(k, _)| k == "commands").map(|(_, v)| v)) };
+    let leader = crate::keys::leader_or_default(config.leader.as_deref());
+    for (mode, lhs, r) in keys {
+        if !may_run {
+            let commands = |n: &str| -> Vec<Vec<String>> { steps.iter().chain(config.commands.iter()).filter(|(c, _)| c == n).map(|(_, s)| s.clone()).collect() };
+            if !crate::keys::mapping_risks(mode, &r, &leader, &commands).is_empty() {
+                gated.push(format!("keys.{}.{lhs}", mode.name()));
+                continue;
+            }
+        }
+        config.keys.push((mode, lhs, r));
+    }
     Loaded { config, warnings, gated }
+}
+
+/// Each command's steps as a file gives them, valid or not (what its mappings could call; src/commands.ts commandSteps).
+pub fn command_steps(value: Option<&Val>) -> Vec<(String, Vec<String>)> {
+    let Some(t) = value.and_then(Val::as_table) else { return vec![] };
+    t.iter()
+        .filter_map(|(name, v)| {
+            let run = if v.as_table().is_some() { v.get("run") } else { Some(v) };
+            let steps: Vec<String> = match run {
+                Some(Val::Str(s)) => vec![s.clone()],
+                Some(Val::Arr(a)) => a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect(),
+                _ => vec![],
+            };
+            (!steps.is_empty()).then(|| (name.clone(), steps))
+        })
+        .collect()
 }
 
 fn parse_engines(value: &Val, w: &str, may_run: bool, config: &mut Config, warnings: &mut Vec<String>, gated: &mut Vec<String>) {
@@ -1012,6 +1045,49 @@ run = "new"
         let t = load_str(project, PROJECT_CONFIG, LoadOptions { base: Some(r.config), trusted: true, label: PROJECT_CONFIG });
         assert!(t.config.commands.iter().any(|(n, s)| n == "Deploy" && s == &["!./deploy.sh"]));
         assert_eq!(info(&t.config, "Deploy"), Some(CommandInfo { description: Some("ship it".into()), waits_for_trust: false }));
+    }
+
+    #[test]
+    fn a_projects_risky_mappings_wait_for_trust() {
+        let mine = load("[commands]\nTest = \"!npm test\"\nHi = \"queue hi\"\n").config;
+        let project = r#"
+[commands]
+Deploy = "!./deploy.sh"
+[keys.normal]
+j = ":!touch pwned<CR>"
+k = ":colorscheme nord<CR>"
+q = "q:!x<CR>"
+"<leader>d" = ":Deploy<CR>"
+"<leader>t" = ":Test<CR>"
+"<leader>h" = ":Hi<CR>"
+"<leader>n" = ":new "
+"<leader>m" = ":nnoremap x :!y<CR>"
+[keys.insert]
+jk = "<Esc>:!x<CR>"
+"<C-s>" = "edit.submit"
+[keys.command]
+"<C-x>" = "!x<CR>"
+[keys]
+Q = [":", "command X !y", "<CR>"]
+"#;
+        let untrusted = load_str(project, PROJECT_CONFIG, LoadOptions { base: Some(mine.clone()), trusted: false, label: PROJECT_CONFIG });
+        assert_eq!(
+            untrusted.gated,
+            ["commands.Deploy", "keys.normal.j", "keys.normal.q", "keys.normal.<leader>d", "keys.normal.<leader>t", "keys.normal.<leader>m", "keys.insert.jk", "keys.command.<C-x>", "keys.normal.Q"]
+        );
+        let mapped: Vec<(&str, &str)> = untrusted.config.keys.iter().map(|(m, l, _)| (m.name(), l.as_str())).collect();
+        assert_eq!(mapped, [("normal", "k"), ("normal", "<leader>h"), ("normal", "<leader>n"), ("insert", "<C-s>")], "the safe ones still apply");
+        assert!(untrusted.warnings.is_empty(), "{:?}", untrusted.warnings);
+
+        let trusted = load_str(project, PROJECT_CONFIG, LoadOptions { base: Some(mine), trusted: true, label: PROJECT_CONFIG });
+        assert!(trusted.gated.is_empty());
+        assert!(trusted.config.keys.iter().any(|(m, l, r)| *m == KeyMode::Normal && l == "j" && *r == RhsValue::Str(":!touch pwned<CR>".into())));
+        assert!(trusted.config.keys.iter().any(|(m, l, _)| *m == KeyMode::Command && l == "<C-x>"));
+
+        // your own config.toml maps what it likes
+        let own = load("[keys.normal]\nj = \":!touch mine<CR>\"\nQ = \":nnoremap x :!y<CR>\"\n");
+        assert!(own.gated.is_empty());
+        assert_eq!(own.config.keys.len(), 2);
     }
 
     #[test]
