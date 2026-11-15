@@ -16,7 +16,7 @@ import { expandPrompt } from "./attach.js";
 import { CUSTOM_ENGINES, type CustomEngine, ENGINE_BINS, ENGINE_NAMES, type EngineId } from "./engines.js";
 import { LineSplitter } from "./lines.js";
 import { flagValue } from "./permissions.js";
-import { escapeControls, withoutEscapes } from "./printable.js";
+import { escapeControls, oneLine, withoutEscapes } from "./printable.js";
 import { Session, type TranscriptItem } from "./session.js";
 import type { WorktreeInfo } from "./worktree.js";
 
@@ -786,7 +786,8 @@ export class CliSession extends Session {
 					this.lastMessageId = ev.id;
 					break;
 				case "model":
-					if (!this.requestedModel) this.model = ev.model;
+					// the CLI's name for it, drawn in the winbar, statusline and sidebar
+					if (!this.requestedModel) this.model = oneLine(ev.model) || this.model;
 					this.emit();
 					break;
 				case "text_delta": {

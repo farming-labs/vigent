@@ -278,10 +278,12 @@ fn apply_state(app: &mut App, i: usize, state: &Value) {
     if let Some(id) = m["id"].as_str().filter(|id| !id.is_empty() && *id != "unknown")
         && shown.as_deref().is_none_or(|m| m == "default" || m == "pi")
     {
-        s.model = Some(match m["provider"].as_str().filter(|p| !p.is_empty()) {
+        s.model = Some(crate::printable::one_line(&match m["provider"].as_str().filter(|p| !p.is_empty()) {
             Some(p) => format!("{p}/{id}"),
             None => id.into(),
-        });
+        }))
+        .filter(|m| !m.is_empty())
+        .or(s.model.take());
         if s.requested_model.as_deref() == Some("default") {
             s.requested_model = None;
         }

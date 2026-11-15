@@ -51,6 +51,11 @@ pub fn is_unsafe(c: char) -> bool {
     (n <= 0x1f && !matches!(c, '\t' | '\n' | '\r')) || (0x7f..=0x9f).contains(&n) || is_bidi(c)
 }
 
+/// `printable` on one line: runs of whitespace become one space (src/printable.ts oneLine).
+pub fn one_line(text: &str) -> String {
+    printable(text).split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 /// Text for a plain terminal with every character it would act on written
 /// out instead: `\x1b`, `\x9b`, `\r`, `\u202e`. Tabs and newlines stay
 /// (src/printable.ts escapeControls).
@@ -180,6 +185,7 @@ mod tests {
         assert_eq!(printable("\u{9d}52;c;aGk=\u{9c}"), "52;c;aGk=");
         assert_eq!(printable("abc\u{202e}dcba\u{2066}x\u{200f}"), "abcdcbax");
         assert_eq!(printable("\x1b[8mhidden\x1b[0m"), "hidden");
+        assert_eq!(one_line("m-MODEL\x1b]0;T\x07\u{9d}0;C\u{9c} \n x"), "m-MODEL0;C x");
     }
 
     #[test]

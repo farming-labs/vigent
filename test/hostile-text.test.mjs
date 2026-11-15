@@ -4,7 +4,13 @@
  * the terminal as an escape sequence or control character. Each sink has a test.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import { after, test } from "node:test";
+import { parseCodexModels } from "../dist/choices.js";
+import { CliSession } from "../dist/cli-engines.js";
+import { parseModelList } from "../dist/pi-cli.js";
 import { splitView, unifiedView } from "../dist/diffview.js";
 import { TextFloat } from "../dist/float.js";
 import { parseDiff } from "../dist/hunks.js";
@@ -32,6 +38,9 @@ export function assertSafe(lines, what) {
 	const bad = lines.flatMap((l) => unsafeBytes(l));
 	assert.deepEqual(bad, [], `${what}: control bytes reach the terminal`);
 }
+
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "vigent-hostile-"));
+after(() => fs.rmSync(tmp, { recursive: true, force: true }));
 
 const painter = () => new Painter(BUILTIN_THEMES.default);
 const HOSTILE_DIFF = [
@@ -62,4 +71,27 @@ test(":review draws a hunk's lines, header and file name as text", () => {
 	const out = review.render(220);
 	assertSafe(out, ":review");
 	assert.match(out.join("\n"), /\+A\\x1b\]52;c;UFdORUQ=\\x07B/);
+});
+
+test("a model name the CLI reports is drawn without its escape sequences", async () => {
+	const bin = path.join(tmp, "claude");
+	const init = { type: "system", subtype: "init", session_id: "s-1", model: `m-MODEL${HOSTILE}` };
+	const done = { type: "result", subtype: "success", is_error: false, result: "ok", session_id: "s-1" };
+	fs.writeFileSync(bin, `#!/usr/bin/env node\nfor (const e of [${JSON.stringify(init)}, ${JSON.stringify(done)}]) console.log(JSON.stringify(e));\n`);
+	fs.chmodSync(bin, 0o755);
+	const s = new CliSession("m", "claude", undefined, { cwd: tmp, bin });
+	s.send("hi");
+	for (let i = 0; i < 500 && !(s.items.length > 1 && s.state !== "running"); i++) await new Promise((r) => setTimeout(r, 10));
+	assert.equal(s.model, "m-MODELABCD52;c;QzE=EF", JSON.stringify(s.items));
+	s.dispose();
+});
+
+test("model lists from codex debug models and pi --list-models: names without escape sequences", () => {
+	const codex = parseCodexModels(JSON.stringify({ models: [{ slug: `gpt${HOSTILE}`, display_name: `GPT${HOSTILE}`, description: `fast\n${HOSTILE}` }, { slug: "\x1b]0;x\x07" }] }));
+	assert.deepEqual(
+		codex.map((m) => [m.slug, m.name, m.description]),
+		[["gptABCD52;c;QzE=EF", "GPTABCD52;c;QzE=EF", "fast ABCD52;c;QzE=EF"]],
+		"a slug that's nothing but escapes goes",
+	);
+	assert.deepEqual(parseModelList(`provider  model\nanthropic  claude${HOSTILE}  200K\n`), [{ provider: "anthropic", id: "claudeABCD52;c;QzE=EF" }]);
 });

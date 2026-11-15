@@ -2,6 +2,7 @@
 //! come from the engine itself where it can say (`pi --list-models`, `codex
 //! debug models`, `opencode models`); any name can still be typed in the picker.
 
+use crate::printable::one_line;
 use serde_json::Value;
 use std::sync::Mutex;
 
@@ -230,11 +231,12 @@ pub fn parse_codex_models(json: &str) -> Vec<CodexModel> {
     let Some(models) = v["models"].as_array() else { return vec![] };
     models
         .iter()
-        .filter(|m| m["slug"].is_string() && (m.get("visibility").is_none_or(Value::is_null) || m["visibility"] == "list"))
+        .filter(|m| m["slug"].as_str().is_some_and(|s| !one_line(s).is_empty()) && (m.get("visibility").is_none_or(Value::is_null) || m["visibility"] == "list"))
+        // names as Codex gives them, with nothing a terminal would act on
         .map(|m| CodexModel {
-            slug: m["slug"].as_str().unwrap_or_default().into(),
-            name: m["display_name"].as_str().or(m["slug"].as_str()).unwrap_or_default().into(),
-            description: m["description"].as_str().map(str::to_string),
+            slug: one_line(m["slug"].as_str().unwrap_or_default()),
+            name: Some(one_line(m["display_name"].as_str().or(m["slug"].as_str()).unwrap_or_default())).filter(|n| !n.is_empty()).unwrap_or_else(|| one_line(m["slug"].as_str().unwrap_or_default())),
+            description: m["description"].as_str().map(one_line),
             efforts: m["supported_reasoning_levels"]
                 .as_array()
                 .map(|l| l.iter().filter_map(|x| x.as_str().or(x["effort"].as_str()).map(str::to_string)).collect())
@@ -340,6 +342,7 @@ pub fn parse_model_list(text: &str) -> Vec<(String, String)> {
     let mut out = vec![];
     let mut table = false;
     for line in text.lines() {
+        let line = one_line(line);
         let mut w = line.split_whitespace();
         let (Some(p), Some(id)) = (w.next(), w.next()) else { continue };
         if p == "provider" && id == "model" {
@@ -412,5 +415,15 @@ mod tests {
     fn pi_model_table() {
         let t = "Loading...\nprovider  model     context\nfake      test      128k\nanthropic claude-x  200k\n";
         assert_eq!(parse_model_list(t), [("fake".to_string(), "test".to_string()), ("anthropic".into(), "claude-x".into())]);
+    }
+
+    #[test]
+    fn model_lists_keep_no_escape_sequences() {
+        let evil = "A\x1b]52;c;UFdORUQ=\x07B\x1b]0;TITLE\x07C\x1b[2JD\u{9d}52;c;QzE=\u{9c}E\u{202e}F";
+        let json = serde_json::json!({"models": [{"slug": format!("gpt{evil}"), "display_name": format!("GPT{evil}"), "description": format!("fast\n{evil}")}, {"slug": "\x1b]0;x\x07"}]}).to_string();
+        let m = parse_codex_models(&json);
+        assert_eq!(m.len(), 1, "a slug that's nothing but escapes goes");
+        assert_eq!((m[0].slug.as_str(), m[0].name.as_str(), m[0].description.as_deref()), ("gptABCD52;c;QzE=EF", "GPTABCD52;c;QzE=EF", Some("fast ABCD52;c;QzE=EF")));
+        assert_eq!(parse_model_list(&format!("provider  model\nanthropic  claude{evil}  200K\n")), [("anthropic".to_string(), "claudeABCD52;c;QzE=EF".to_string())]);
     }
 }
