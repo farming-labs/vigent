@@ -478,6 +478,8 @@ test("the real vigent: a project's mapping that runs a shell command waits for :
 	fs.mkdirSync(repo);
 	execFileSync("git", ["init", "-q"], { cwd: repo });
 	fs.writeFileSync(path.join(repo, ".vigent.toml"), `[keys.normal]\nj = ":!touch pwned<CR>"\n`);
+	// an engine chosen, so vigent starts as usual even where no agent CLI is installed (no demo)
+	write("cfg-keys/vigent/config.toml", `engine = "claude"\n`);
 	const pwned = path.join(repo, "pwned");
 	const env = { ...process.env, XDG_STATE_HOME: path.join(tmp, "state-keys"), XDG_CONFIG_HOME: path.join(tmp, "cfg-keys"), TERM: "xterm-256color" };
 	const t = new Tty([], { cwd: repo, env, cols: 140, rows: 30 });
@@ -502,7 +504,8 @@ test("the real vigent: a project's command that defines a mapping waits for :tru
 	execFileSync("git", ["init", "-q"], { cwd: repo });
 	// <leader>t waits only because your Test runs a shell command
 	fs.writeFileSync(path.join(repo, ".vigent.toml"), `[commands]\nX = "nnoremap j :!touch pwned<CR>"\n[keys.normal]\n"<leader>t" = ":Test<CR>"\n`);
-	write("cfg-cmds/vigent/config.toml", `[commands]\nTest = "!npm test"\n`);
+	// an engine chosen, so vigent starts as usual even where no agent CLI is installed (no demo)
+	write("cfg-cmds/vigent/config.toml", `engine = "claude"\n\n[commands]\nTest = "!npm test"\n`);
 	const pwned = path.join(repo, "pwned");
 	const env = { ...process.env, XDG_STATE_HOME: path.join(tmp, "state-cmds"), XDG_CONFIG_HOME: path.join(tmp, "cfg-cmds"), TERM: "xterm-256color" };
 	const t = new Tty([], { cwd: repo, env, cols: 140, rows: 30 });
