@@ -1,5 +1,5 @@
 /**
- * The registry: themes, templates, keymaps, engines and setups people share,
+ * The registry: themes, templates, keymaps, commands, engines and setups people share,
  * from the index the website publishes (scripts/registry.mjs writes it from
  * registry/<kind>/<name>/ in the vigent repo).
  *
@@ -12,8 +12,8 @@
  * the folder it's in), for tests and offline use.
  *
  * Nothing is added before you've seen the file and said yes (--yes skips the
- * question). A theme is a file in your themes folder; a template, keymap or
- * engine goes into config.toml beside what's there; a setup is the
+ * question). A theme is a file in your themes folder; a template, keymap,
+ * command or engine goes into config.toml beside what's there; a setup is the
  * repository's .vigent.toml, and what it runs waits for :trust.
  */
 import * as fs from "node:fs";
@@ -28,9 +28,9 @@ import { BUILTIN_THEMES, themesDir } from "./theme.js";
 import { repoRoot } from "./worktree.js";
 
 export const REGISTRY_URL = "https://vigent.farming-labs.dev/registry/index.json";
-export const KINDS = ["theme", "template", "keymap", "engine", "setup"] as const;
+export const KINDS = ["theme", "template", "keymap", "command", "engine", "setup"] as const;
 export type Kind = (typeof KINDS)[number];
-const PLURAL: Record<Kind, string> = { theme: "themes", template: "templates", keymap: "keymaps", engine: "engines", setup: "setups" };
+const PLURAL: Record<Kind, string> = { theme: "themes", template: "templates", keymap: "keymaps", command: "commands", engine: "engines", setup: "setups" };
 
 /** One thing an entry runs: a command, or a rule that lets Claude Code run one without asking. */
 export interface RegistryRun {
@@ -247,6 +247,11 @@ export function planAdd(entry: RegistryEntry, { force = false, cwd = process.cwd
 	const done = [`added ${entry.kind === "keymap" ? `${units.length} mapping${units.length === 1 ? "" : "s"}` : units.join(", ")} to ${file}`];
 	if (entry.kind === "template") done.push(`use it with :new -t ${entry.name} <task> (vigent reads it when it starts)`);
 	else if (entry.kind === "engine") done.push(`use it with :new <task> --engine ${entry.name}, or engine = "${entry.name}" in config.toml (vigent reads it when it starts)`);
+	else if (entry.kind === "command") {
+		const names = Object.keys((raw.commands as Record<string, unknown>) ?? {});
+		const them = names.length === 1 ? "it" : "them";
+		done.push(`use ${them} with ${names.map((n) => `:${n}`).join(", ")} (vigent reads ${them} when it starts; :command lists ${them})`);
+	}
 	else done.push("vigent reads them when it starts");
 	return { file, text: r.text, verb: "It adds to", replaced: r.replaced, done };
 }

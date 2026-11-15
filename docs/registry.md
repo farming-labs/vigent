@@ -1,12 +1,13 @@
 # The registry
 
-Themes, templates, keymaps, engines and setups that people share. Each entry is one small file in the vigent repository, checked by vigent's own loader before it's listed, and `vigent add` shows you that file, and everything it runs, before it changes anything. Browse them at [vigent.farming-labs.dev/registry](https://vigent.farming-labs.dev/registry).
+Themes, templates, keymaps, commands, engines and setups that people share. Each entry is one small file in the vigent repository, checked by vigent's own loader before it's listed, and `vigent add` shows you that file, and everything it runs, before it changes anything. Browse them at [vigent.farming-labs.dev/registry](https://vigent.farming-labs.dev/registry).
 
 | Kind | What it is | Where `vigent add` puts it |
 |---|---|---|
 | `theme` | a theme file: extends a built-in theme, with its own `[highlights]` and `[style]` ([Themes](themes.md#writing-your-own-theme)) | `~/.config/vigent/themes/<name>.toml` |
 | `template` | a prompt to start agents with: `[templates.<name>]` ([templates](config.md#templates)) | merged into `~/.config/vigent/config.toml` |
 | `keymap` | key bindings: `[keys.normal]` and the other modes ([keys](config.md#keys)) | merged into `~/.config/vigent/config.toml` |
+| `command` | your own `:` commands: `[commands.<Name>]` tables with a description, and `[keys.*]` mappings that call them ([commands](config.md#commands)) | merged into `~/.config/vigent/config.toml` |
 | `engine` | another agent CLI: `[engines.<name>]` with a command ([your own engines](config.md#your-own-engines)) | merged into `~/.config/vigent/config.toml` |
 | `setup` | a whole [`.vigent.toml`](config.md#a-projects-own-config-vigenttoml) for a stack: hooks, commands, permissions | `.vigent.toml` at the repository's root |
 
@@ -17,6 +18,7 @@ Themes, templates, keymaps, engines and setups that people share. Each entry is 
 ```bash
 vigent add --list                  # every entry, by kind
 vigent add --list engines          # one kind
+vigent add land                    # a command: :Land runs the tests, then :pr
 vigent search review               # entries with these words in their name, description or tags
 vigent add harbor                  # show the file and what it runs, ask, then add it
 vigent add theme/harbor            # the same, with its kind: for when two kinds share a name
@@ -50,10 +52,10 @@ Add it? [y/N]
 Anything but `y` (or `yes`) adds nothing. Then:
 
 - **A theme** is written to your themes folder. Use it with `:colorscheme <name>`, or `theme = "<name>"` in config.toml. A theme that's already built in has nothing to add: `vigent add nord` says to use `:colorscheme nord`.
-- **A template, keymap or engine** goes into config.toml beside what's there. A table you already have (`[keys.normal]`, say) gets the entry's keys at its end; a new one goes at the end of the file. Your comments, order and other settings stay as you wrote them, and the result is read back before it's saved: if it wouldn't read as your settings plus the entry's (a table written inline, for instance), nothing changes and vigent says so. vigent reads it when it starts.
+- **A template, keymap, command or engine** goes into config.toml beside what's there. A table you already have (`[keys.normal]`, say) gets the entry's keys at its end; a new one goes at the end of the file. Your comments, order and other settings stay as you wrote them, and the result is read back before it's saved: if it wouldn't read as your settings plus the entry's (a table written inline, for instance), nothing changes and vigent says so. vigent reads it when it starts. A command entry says which commands it adds (`use it with :Land`); `:command` lists them, and <Tab> completes them with their descriptions.
 - **A setup** is written as `.vigent.toml` at the root of the repository you're in (from any folder inside it). Its commands don't run until you trust it with `:trust` in vigent, or `vigent trust`.
 
-`vigent add` refuses, and says why, rather than overwrite anything: a theme file or `.vigent.toml` that exists, or a key config.toml already sets (`config.toml already has [keys.normal] "<leader>an" (--force replaces it)`). With `--force` it replaces exactly those, and lists them before it asks. These checks happen before the question, so you never approve something that then fails.
+`vigent add` refuses, and says why, rather than overwrite anything: a theme file or `.vigent.toml` that exists, or a command or key config.toml already has (`config.toml already has [commands.Land] (--force replaces it)`, `config.toml already has [keys.normal] "<leader>an"`). With `--force` it replaces exactly those, and lists them before it asks. These checks happen before the question, so you never approve something that then fails.
 
 An unknown name gets the closest ones (`no 'harbr' in the registry (did you mean harbor?)`).
 
@@ -73,6 +75,7 @@ VIGENT_REGISTRY=website/public/registry node dist/cli.js add my-theme
 - **You read it before it's added.** What `vigent add` prints is the file it writes, byte for byte, from the same index entry.
 - **What runs is read from the file, not written by its author.** `npm run registry` loads each entry the way vigent's trust check does and lists every part vigent holds back from an untrusted `.vigent.toml`: hooks, `[commands]` with a shell step, an engine's `command` (with its `model_args` and `resume_args`), `args` for a built-in engine, and Claude Code `allow` rules. The website's cards and `vigent add` show that list; an entry can't hide a command from it.
 - **Themes, templates and keymaps are data.** A theme only extends a built-in theme and sets colors and layout. A template is a prompt. A keymap maps keys to actions and ex commands, and may not define commands (`:command`), so it can't carry a shell step.
+- **A command entry lists every shell step.** Its commands go into your own config.toml, so their `!` steps run when you call them; `vigent add` and the website list each one, read from the file, before you add it. A command whose steps are all ex commands (`new -t review {args}`, `effort high`) is data only. A step may not define commands or mappings (`command! X !rm -rf ~`), so nothing can run that the list doesn't show, and the entry's `[keys.*]` may only call its own commands. A keymap entry on its own still can't define commands.
 - **An engine runs a program you name.** It goes into your own config.toml, which vigent trusts, so the question is the check: read the command.
 - **A setup waits for `:trust`.** It's a project file like any other `.vigent.toml`: what it runs only counts once you trust it, and trust is for that exact content.
 - **Every entry is reviewed and checked.** Entries arrive as pull requests to the vigent repository. CI loads each one with vigent's own code and rejects it with any warning vigent would show.
@@ -86,9 +89,9 @@ registry/<kind>/<name>/entry.toml   the file people add
 registry/<kind>/<name>/meta.toml    description, author, license, tags
 ```
 
-- `<kind>` is `theme`, `template`, `keymap`, `engine` or `setup`.
+- `<kind>` is `theme`, `template`, `keymap`, `command`, `engine` or `setup`.
 - `<name>` is lowercase letters and digits joined by `-` (`fix-ci`, `pnpm-monorepo`), at most 40 characters, and not a built-in theme's name. For a template or engine, it's also the table's name: `[templates.fix-ci]`, `[engines.aider]`.
-- `entry.toml` holds only what the kind adds: a theme file (`extends` a built-in theme, colors as `"#rrggbb"` or `"NONE"`); one `[templates.<name>]`; `[keys.*]` tables; one `[engines.<name>]` with a `command`; or anything a `.vigent.toml` can hold.
+- `entry.toml` holds only what the kind adds: a theme file (`extends` a built-in theme, colors as `"#rrggbb"` or `"NONE"`); one `[templates.<name>]`; `[keys.*]` tables; one or a few related `[commands.<Name>]` tables, each with `run` and a `description`, and any `[keys.*]` mappings that call them (`"<leader>L" = ":Land<CR>"`); one `[engines.<name>]` with a `command`; or anything a `.vigent.toml` can hold.
 - `meta.toml`:
 
   ```toml

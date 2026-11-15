@@ -1,4 +1,4 @@
-//! The registry: themes, templates, keymaps, engines and setups people share,
+//! The registry: themes, templates, keymaps, commands, engines and setups people share,
 //! from the index the website publishes (src/registry.ts, word for word).
 //!
 //!   vigent add <name>            show the file (and what it runs), ask, then add it
@@ -18,8 +18,8 @@ use crate::config_edit::{Merge, Unit, merge_toml, toml_key};
 use crate::toml::Val;
 
 pub const REGISTRY_URL: &str = "https://vigent.farming-labs.dev/registry/index.json";
-pub const KINDS: [&str; 5] = ["theme", "template", "keymap", "engine", "setup"];
-const PLURAL: [&str; 5] = ["themes", "templates", "keymaps", "engines", "setups"];
+pub const KINDS: [&str; 6] = ["theme", "template", "keymap", "command", "engine", "setup"];
+const PLURAL: [&str; 6] = ["themes", "templates", "keymaps", "commands", "engines", "setups"];
 const KEY_MODES: [&str; 4] = ["normal", "insert", "visual", "command"];
 
 /// One thing an entry runs: a command, or a rule that lets Claude Code run one without asking.
@@ -265,6 +265,11 @@ pub fn plan(entry: &Entry, force: bool, cwd: &Path) -> Result<Plan, String> {
             done.push(match entry.kind.as_str() {
                 "template" => format!("use it with :new -t {name} <task> (vigent reads it when it starts)"),
                 "engine" => format!("use it with :new <task> --engine {name}, or engine = \"{name}\" in config.toml (vigent reads it when it starts)"),
+                "command" => {
+                    let names: Vec<String> = raw.iter().find(|(k, _)| k == "commands").and_then(|(_, v)| v.as_table()).unwrap_or_default().iter().map(|(n, _)| format!(":{n}")).collect();
+                    let them = if names.len() == 1 { "it" } else { "them" };
+                    format!("use {them} with {} (vigent reads {them} when it starts; :command lists {them})", names.join(", "))
+                }
                 _ => "vigent reads them when it starts".into(),
             });
             Ok(Plan { file, text, verb: "It adds to", replaced, done })
@@ -458,7 +463,7 @@ mod tests {
         assert_eq!(find(&all, "harbr").unwrap_err(), "no 'harbr' in the registry (did you mean harbor?)");
         assert_eq!(find(&all, "zzzzzzzz").unwrap_err(), "no 'zzzzzzzz' in the registry (vigent add --list shows them all)");
         assert_eq!(find(&all, "both").unwrap_err(), "'both' is a theme and a template: vigent add theme/both or vigent add template/both");
-        assert_eq!(find(&all, "plugin/x").unwrap_err(), "unknown kind 'plugin' (theme, template, keymap, engine, setup)");
+        assert_eq!(find(&all, "plugin/x").unwrap_err(), "unknown kind 'plugin' (theme, template, keymap, command, engine, setup)");
         assert_eq!(find(&all, "engines/harbor").unwrap_err(), "no engine 'harbor' in the registry (vigent add --list shows them all)");
         assert_eq!(close_names("pnpm", &["pnpm-monorepo", "cargo-workspace"]), ["pnpm-monorepo"]);
         assert_eq!(builtin_theme_message("theme/nord").as_deref(), Some("'nord' is a built-in theme: nothing to add, use :colorscheme nord"));

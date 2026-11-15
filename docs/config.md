@@ -388,6 +388,8 @@ While vigent runs:
 
 In a project's `.vigent.toml`, a command with a shell step waits for `:trust`. Commands made only of ex commands don't.
 
+Commands other people shared are in the [registry](registry.md): `vigent add --list command` lists them, and `vigent add land` adds `:Land` (the tests, then `:pr`) and its `<leader>L` mapping to your config.toml, after showing you every shell step.
+
 ## A project's own config: `.vigent.toml`
 
 A `.vigent.toml` at the root of a repository is read on top of your `~/.config/vigent/config.toml`, so a team can commit its theme, templates, engine, worktree layout, keys and hooks once. Where both set something, the project wins; tables merge key by key (setting `model` under `[engines.claude]` keeps your `effort`).

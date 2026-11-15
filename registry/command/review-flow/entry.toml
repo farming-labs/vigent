@@ -1,0 +1,9 @@
+# :Review and :Fix start an agent from the review and fix templates that ship
+# with vigent; what you type after the name is the task.
+[commands.Review]
+run = "new -t review {args}"
+description = "start an agent that reviews the branch with the review template"
+
+[commands.Fix]
+run = "new -t fix {args}"
+description = "start an agent that fixes what you describe, with the fix template"

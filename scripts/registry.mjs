@@ -10,7 +10,8 @@
  *
  * An entry is two files:
  *   entry.toml   the file people add: a theme file, [templates.<name>], [keys.*],
- *                [engines.<name>] or a whole .vigent.toml
+ *                [commands.<Name>] (and [keys.*] that call them), [engines.<name>]
+ *                or a whole .vigent.toml
  *   meta.toml    description, author, license, tags
  *
  * It's rejected for an unknown kind, a bad name, missing or unknown meta, a
@@ -43,7 +44,7 @@ const { parseStyle } = await dist("style.js");
 const { CUSTOM_ENGINES, ENGINE_BINS, ENGINE_IDS } = await dist("engines.js");
 const { normalizeStep } = await dist("commands.js");
 
-export const KINDS = ["theme", "template", "keymap", "engine", "setup"];
+export const KINDS = ["theme", "template", "keymap", "command", "engine", "setup"];
 /** lowercase words joined by -, as in a URL */
 export const NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const META = { description: "one line on what it does", author: "who made it", license: "an SPDX id, e.g. MIT", tags: 'a list, e.g. ["dark", "layout"]' };
@@ -89,7 +90,8 @@ export function runsOf(raw, gated) {
 		const [top, id, key] = from.split(".");
 		if (top === "hooks") out.push({ from, command: String(raw.hooks[id]).trim() });
 		else if (top === "commands") {
-			for (const step of [raw.commands[id]].flat()) {
+			const c = raw.commands[id];
+			for (const step of [isTable(c) ? c.run : c].flat()) {
 				const s = normalizeStep(step);
 				if (s.startsWith("!")) out.push({ from, command: s.slice(1).trim() });
 			}
@@ -185,8 +187,48 @@ export function themeColors(theme) {
 	return t;
 }
 
-/** Only the tables a kind adds: [templates.<name>], [engines.<name>], [keys.*]. */
+/** A right-hand side or step that defines a command (`:command! X !rm -rf ~`), whose shell step the index couldn't list. */
+const definesCommand = (s) => /(^|<CR>|<cr>|\|)\s*:?\s*com(m(a(nd?)?)?)?!?\s/.test(s);
+/** ... or a mapping (`nmap x :!rm -rf ~<CR>`). */
+const definesMapping = (s) => /(^|<CR>|<cr>|\|)\s*:?\s*[nicvx]?(nore)?map\s/.test(s);
+
+/** [commands.<Name>] tables, each with run and a description, and [keys.*] that call them. */
+function checkCommands(raw, problems) {
+	for (const k of Object.keys(raw)) if (k !== "commands" && k !== "keys") problems.push(`a command entry has only [commands.<Name>] and [keys.*] that call them, not '${k}' (a setup can set anything)`);
+	const names = isTable(raw.commands) ? Object.keys(raw.commands) : [];
+	if (!names.length) {
+		problems.push("[commands.<Name>] is missing: a command entry defines one or a few related commands");
+		return;
+	}
+	for (const [n, v] of Object.entries(raw.commands)) {
+		if (!isTable(v)) {
+			problems.push(`[commands.${n}] should be a table with run and description (the registry's commands say what they do)`);
+			continue;
+		}
+		if (typeof v.description !== "string" || !v.description.trim()) problems.push(`[commands.${n}] needs a description: what it does, for :command, :help and <Tab>`);
+		for (const step of [v.run].flat().filter((s) => typeof s === "string")) {
+			if (definesCommand(step) || definesMapping(step)) problems.push(`[commands.${n}]: a step can't define commands or mappings (${JSON.stringify(step)}): what runs has to be in the file`);
+		}
+	}
+	if (raw.keys === undefined) return;
+	if (!isTable(raw.keys)) {
+		problems.push("[keys] should be a table, e.g. [keys.normal]");
+		return;
+	}
+	const calls = (s) => names.some((n) => new RegExp(`(^|<CR>|<cr>|\\|)\\s*:\\s*${n}(\\s|<|\\||$)`).test(s));
+	for (const [mode, table] of Object.entries(raw.keys)) {
+		for (const [lhs, rhs] of Object.entries(isTable(table) ? table : { [mode]: table })) {
+			const steps = [rhs].flat().filter((s) => typeof s === "string");
+			const where = isTable(table) ? `[keys.${mode}] "${lhs}"` : `[keys] "${lhs}"`;
+			if (steps.some(definesCommand)) problems.push(`${where}: a mapping can't define commands`);
+			else if (!steps.length || !steps.every(calls)) problems.push(`${where}: a command entry's mappings call its commands (${names.map((n) => `:${n}<CR>`).join(", ")})`);
+		}
+	}
+}
+
+/** Only the tables a kind adds: [templates.<name>], [engines.<name>], [keys.*], [commands.<Name>]. */
 function checkShape(kind, name, raw, problems) {
+	if (kind === "command") return checkCommands(raw, problems);
 	const only = { template: "templates", keymap: "keys", engine: "engines" }[kind];
 	if (!only) return;
 	for (const k of Object.keys(raw)) if (k !== only) problems.push(`a ${kind} entry has only [${only}${kind === "keymap" ? ".*" : `.${name}`}], not '${k}' (a setup can set anything)`);

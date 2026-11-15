@@ -1,6 +1,6 @@
 # The vigent registry
 
-Themes, templates, keymaps, engines and setups people share. Each folder here is one entry, and people add it with `vigent add <name>`, after vigent has shown them the file and everything it runs. The website lists them at [vigent.farming-labs.dev/registry](https://vigent.farming-labs.dev/registry).
+Themes, templates, keymaps, commands, engines and setups people share. Each folder here is one entry, and people add it with `vigent add <name>`, after vigent has shown them the file and everything it runs. The website lists them at [vigent.farming-labs.dev/registry](https://vigent.farming-labs.dev/registry).
 
 ## Adding an entry
 
@@ -11,7 +11,7 @@ Themes, templates, keymaps, engines and setups people share. Each folder here is
    meta.toml    description, author, license, tags
    ```
 
-   `<kind>` is `theme`, `template`, `keymap`, `engine` or `setup`. `<name>` is lowercase letters and digits joined by `-`, at most 40 characters, and not a built-in theme's name.
+   `<kind>` is `theme`, `template`, `keymap`, `command`, `engine` or `setup`. `<name>` is lowercase letters and digits joined by `-`, at most 40 characters, and not a built-in theme's name.
 
 2. Write `entry.toml`, which holds only what its kind adds:
 
@@ -20,6 +20,7 @@ Themes, templates, keymaps, engines and setups people share. Each folder here is
    | `theme` | a theme file: `extends` a built-in theme, `[highlights]`, `[style]`; colors are `"#rrggbb"` or `"NONE"` | [theme/harbor](theme/harbor/entry.toml) |
    | `template` | one `[templates.<name>]`, named like the folder | [template/fix-ci](template/fix-ci/entry.toml) |
    | `keymap` | `[keys.normal]` and the other modes; no `:command` | [keymap/leader-land](keymap/leader-land/entry.toml) |
+   | `command` | one or a few related `[commands.<Name>]` tables, each with `run` and a `description`; `[keys.*]` mappings that call them; no step that defines commands or mappings | [command/land](command/land/entry.toml) |
    | `engine` | one `[engines.<name>]` with a `command`, named like the folder | [engine/aider](engine/aider/entry.toml) |
    | `setup` | anything a `.vigent.toml` holds | [setup/pnpm-monorepo](setup/pnpm-monorepo/entry.toml) |
 

@@ -1,0 +1,11 @@
+# :Land runs the project's tests in the agent's worktree, then opens a pull
+# request; a failing test stops it before anything is pushed. <leader>L too.
+[commands.Land]
+run = [
+  "!if [ -f Cargo.toml ]; then cargo test; elif [ -f go.mod ]; then go test ./...; elif [ -f pyproject.toml ]; then python -m pytest; else npm test; fi",
+  "pr",
+]
+description = "run the tests in the agent's worktree, then push the branch and open a pull request"
+
+[keys.normal]
+"<leader>L" = ":Land<CR>"
