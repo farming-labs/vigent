@@ -71,8 +71,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # npm publish exits 0 only once the registry has the version. Don't
+          # npm view it afterwards: the registry can take a minute to serve a
+          # new version, and that 404 turned the 0.10.3 release red.
           npm publish --access public || {
             echo "::error::npm refused the publish. Check that ${{ steps.version.outputs.name }} on npmjs.com lists a trusted publisher for GitHub Actions: farming-labs/vigent, workflow release.yml"
             exit 1
           }
-          npm view "${{ steps.version.outputs.name }}@${{ steps.version.outputs.version }}" version
