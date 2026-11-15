@@ -259,7 +259,8 @@ async function main(): Promise<number | undefined> {
 			return 1;
 		}
 		const content = fs.readFileSync(file, "utf8");
-		const { gated } = loadConfig(file, { trusted: false, label: PROJECT_CONFIG });
+		// read over your config, as vigent starts: what waits only because it calls one of your commands is named too
+		const { gated } = loadConfig(file, { base: loadConfig().config, trusted: false, label: PROJECT_CONFIG });
 		trustFile(file, content);
 		console.log(`trusted ${file}${gated.length ? `: ${gated.join(", ")} will run` : ""}`);
 		return 0;

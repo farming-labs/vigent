@@ -2,17 +2,17 @@
 //!
 //! A project config can set the theme, templates, keys and worktree layout
 //! freely. The parts that run programs (hooks, engine arguments, custom
-//! engine commands, shell commands under [commands], Claude Code permission
-//! rules, and mappings that can run a shell command or define commands or
-//! mappings) only count once you trust that file, like direnv's `allow`:
-//! `:trust` in vigent, or `vigent trust` in the project. Trust is for the file
-//! as it is now (its sha256, in $XDG_STATE_HOME/vigent/trusted.json); if it
-//! changes, vigent asks again.
+//! engine commands, Claude Code permission rules, and commands and mappings
+//! that can run a shell command, define commands or mappings, write a file
+//! they name or start :serve) only count once you trust that file, like
+//! direnv's `allow`: `:trust` in vigent, or `vigent trust` in the project.
+//! Trust is for the file as it is now (its sha256, in
+//! $XDG_STATE_HOME/vigent/trusted.json); if it changes, vigent asks again.
 
 use std::path::{Path, PathBuf};
 
 use crate::app::App;
-use crate::config::{self, LoadOptions, PROJECT_CONFIG};
+use crate::config::{self, Config, LoadOptions, PROJECT_CONFIG};
 use crate::keys::{KEY_MODES, KeyMode, Keymap, RhsValue};
 
 fn state_file() -> PathBuf {
@@ -103,6 +103,19 @@ pub fn project_file(root: Option<&Path>) -> Option<PathBuf> {
     root.map(|r| r.join(PROJECT_CONFIG))
 }
 
+/// What a project file holds back until it's trusted, read over `mine`: a mapping or command that
+/// waits only because it calls one of your commands is named too.
+fn waiting(content: &str, mine: Config) -> Vec<String> {
+    config::load_str(content, PROJECT_CONFIG, LoadOptions { base: Some(mine), trusted: false, label: PROJECT_CONFIG }).gated
+}
+
+/// A copy of the config in use, with the commands you have now (:command and :delcommand included).
+fn in_use(app: &App) -> Config {
+    let mut c = app.config.clone();
+    c.commands = crate::commands::windows::commands_of(app).clone();
+    c
+}
+
 /// `:trust`: trust the project's .vigent.toml as it is now and use what it runs from now on.
 /// Returns the message to show (src/trust.ts executeProjectTrust).
 pub fn execute_project_trust(app: &mut App) -> String {
@@ -117,7 +130,8 @@ pub fn execute_project_trust(app: &mut App) -> String {
     if let Err(e) = config::parse_toml(&content) {
         return format!("can't trust {PROJECT_CONFIG}: {e}");
     }
-    let gated = config::load_str(&content, PROJECT_CONFIG, LoadOptions { base: None, trusted: false, label: PROJECT_CONFIG }).gated;
+    // what waits, read over a copy of the config in use
+    let gated = waiting(&content, in_use(app));
     if let Err(e) = trust_file(&file, &content) {
         return format!("can't trust {PROJECT_CONFIG}: {e}");
     }
@@ -174,7 +188,8 @@ pub fn command(_args: &[String]) -> i32 {
         return 1;
     };
     let content = std::fs::read_to_string(&file).unwrap_or_default();
-    let gated = config::load_str(&content, PROJECT_CONFIG, LoadOptions { base: None, trusted: false, label: PROJECT_CONFIG }).gated;
+    // read over your config, as vigent starts
+    let gated = waiting(&content, config::load(&config::config_path(), LoadOptions::default()).config);
     if let Err(e) = trust_file(&file, &content) {
         eprintln!("vigent: {e}");
         return 1;
@@ -207,6 +222,19 @@ mod tests {
         assert!(trusted.gated.is_empty());
         apply_new_mappings(&mut keymap, &before, &trusted.config.keys);
         assert_eq!(j(&keymap).as_deref(), Some(":!touch pwned<CR>"), ":trust maps it");
+    }
+
+    #[test]
+    fn the_message_names_what_waits_for_your_commands() {
+        let project = "[commands]\nCheck = \"Test\"\n[keys.normal]\n\"<leader>t\" = \":Test<CR>\"\n\"<leader>h\" = \":Hi<CR>\"\n";
+        let mut app = crate::app::tests::app();
+        app.config = config::load_str("[commands]\nTest = \"!npm test\"\nHi = \"queue hi\"\n", "config.toml", LoadOptions::default()).config;
+        assert_eq!(waiting(project, in_use(&app)), ["commands.Check", "keys.normal.<leader>t"]);
+        assert!(waiting(project, Config::default()).is_empty(), "without your commands, nothing would be named");
+        // what :command and :delcommand changed counts, as :Test runs it now
+        crate::commands::exec(&mut app, "delcommand Test");
+        crate::commands::exec(&mut app, "command! Hi !echo hi");
+        assert_eq!(waiting(project, in_use(&app)), ["keys.normal.<leader>h"]);
     }
 
     #[test]

@@ -693,8 +693,18 @@ const RANGE = /^(?:[\s:%.$,;+-]|\d|'[A-Za-z<>])*/;
 const DEFINES =
 	/^(?:com(?:m(?:a(?:nd?)?)?)?|delc(?:o(?:m(?:m(?:a(?:nd?)?)?)?)?)?|[nvxsoilct]?(?:nore|un)?map|[nvxsoilct]?mapc(?:l(?:e(?:ar?)?)?)?|[nvxsoilct]?no(?:r(?:e(?:m(?:ap?)?)?)?)?|[nvxsoilct]m(?:ap?)?|[nvxsoilct]?unm(?:ap?)?|[nvxsoilct]u(?:n(?:m(?:ap?)?)?)?|[nvx]n|norm(?:al?)?|exe(?:c(?:u(?:te?)?)?)?|so(?:u(?:r(?:ce?)?)?)?)$/;
 
-/** Why a command line is risky from an untrusted file: it runs a shell command, defines or replays, grants trust, or calls a command that does. */
-export type LineRisk = "shell" | "defines" | "trust" | "command" | "unknown";
+/**
+ * Commands that write a file: :w and :write (and :wq and :x, which write in vim; vigent's only
+ * quit). Given a file or !, they can put the transcript over any file; a bare :w only makes a
+ * new <agent>.md here, and never overwrites one.
+ */
+const WRITES = /^(?:w|write|wq|x)$/;
+
+/**
+ * Why a command line is risky from an untrusted file: it runs a shell command, defines or
+ * replays, grants trust, writes a file it names, opens :serve, or calls a command that does.
+ */
+export type LineRisk = "shell" | "defines" | "trust" | "write" | "serve" | "command" | "unknown";
 
 /** The steps of each command a line could call by name (yours and the file's own). */
 export type CommandSteps = (name: string) => string[][];
@@ -702,7 +712,7 @@ export type CommandSteps = (name: string) => string[][];
 /**
  * Whether a command line, run from a project's untrusted .vigent.toml, could
  * run a program or change what runs: `:!cmd`, `:command`, `:nnoremap`,
- * `:normal`, `:trust`, or one of your commands whose steps do.
+ * `:normal`, `:trust`, `:w! file`, `:serve`, or one of your commands whose steps do.
  */
 export function commandLineRisk(line: string, commands: CommandSteps = () => [], depth = 0): LineRisk | undefined {
 	const s = line.replace(RANGE, "");
@@ -711,6 +721,10 @@ export function commandLineRisk(line: string, commands: CommandSteps = () => [],
 	if (DEFINES.test(word)) return "defines";
 	// :trust lets the file run everything; :permissions allow lets Claude Code run more
 	if (word === "trust" || (/^perm(?:s|issions?)?$/.test(word) && /^\S*\s+allow(?:\s|$)/.test(s))) return "trust";
+	const rest = s.slice(word.length).trim();
+	if (WRITES.test(word) && rest) return "write";
+	// :serve opens your agents to the network (:serve local, to this machine); :serve stop closes it
+	if (word === "serve" && rest !== "stop") return "serve";
 	const m = /^(\S*)\s*([\s\S]*)$/.exec(s) as RegExpExecArray;
 	if (!COMMAND_NAME.test(m[1])) return undefined;
 	for (const steps of commands(m[1])) {

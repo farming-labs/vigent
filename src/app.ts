@@ -51,7 +51,7 @@ import { didYouMean } from "./suggest.js";
 import { alertSequence, NOTIFY_MODES, type NotifyMode } from "./notify.js";
 import { VERSION_TEXT } from "./version.js";
 import { backendName, formatBytes, riftriBackends, type RiftriHealth, RIFTRI_INSTALL } from "./riftri.js";
-import { COMMAND_NAME, type CommandInfos, commandCompletions, describeCommand, fillArgs, normalizeStep, showCommand, type UserCommands } from "./commands.js";
+import { COMMAND_NAME, type CommandInfos, commandCompletions, describeCommand, fillArgs, normalizeStep, showCommand, type UserCommands, waitsMessage } from "./commands.js";
 import { defaultLayout, type Layout, type StatuslinePart, type WinbarPart } from "./layout.js";
 import { allEngineIds, defaultEngine as defaultEngineFor, ENGINE_NAMES, type EngineId, type EngineInfo, isEngineId } from "./engines.js";
 import { copyToClipboard } from "./clipboard.js";
@@ -1732,7 +1732,7 @@ export class App implements Component {
 					return;
 				}
 				if (this.commands[cmd]) return this.runUserCommand(cmd, arg);
-				if (this.commandInfo[cmd]?.waitsForTrust) return this.setMessage(`:${cmd} runs shell commands from ${PROJECT_CONFIG}: it waits for :trust`, "WarningMsg");
+				if (this.commandInfo[cmd]?.waitsForTrust) return this.setMessage(`:${waitsMessage(cmd, this.commandInfo[cmd], PROJECT_CONFIG)}`, "WarningMsg");
 				this.setMessage(`E492: Not an editor command: ${cmd}`, "ErrorMsg");
 			}
 		}
@@ -1954,7 +1954,7 @@ export class App implements Component {
 		}
 		if (!rhs) {
 			const c = this.commands[name];
-			if (!c && this.commandInfo[name]?.waitsForTrust) return this.setMessage(`${name} runs shell commands from ${PROJECT_CONFIG}: it waits for :trust`, "WarningMsg");
+			if (!c && this.commandInfo[name]?.waitsForTrust) return this.setMessage(waitsMessage(name, this.commandInfo[name], PROJECT_CONFIG), "WarningMsg");
 			this.setMessage(c ? showCommand(name, c, this.commandInfo[name]) : `E184: No such user-defined command: ${name}`, c ? "Normal" : "ErrorMsg");
 			return;
 		}

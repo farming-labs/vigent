@@ -19,8 +19,10 @@ export type UserCommands = Record<string, string[]>;
 /** What else vigent knows about a command: what it does, and that it waits for :trust. */
 export interface CommandInfo {
 	description?: string;
-	/** a project's command with shell steps, before :trust (it isn't in UserCommands yet) */
+	/** a project's command with shell steps, or ex steps that can run them, before :trust (it isn't in UserCommands yet) */
 	waitsForTrust?: boolean;
+	/** it waits for an ex step (`nnoremap j :!x<CR>`, `permissions allow ...`), not a shell step */
+	exOnly?: boolean;
 }
 
 export type CommandInfos = Record<string, CommandInfo>;
@@ -54,7 +56,10 @@ export function commandSteps(value: unknown): UserCommands {
 	return out;
 }
 
-/** Parse [commands]. Mistakes are warnings; shell commands from an untrusted file are gated. */
+/**
+ * Parse [commands]. Mistakes are warnings; from an untrusted file, a command that `waits`
+ * (one with a shell step, or a step that can run one) is gated.
+ */
 export function parseCommands(
 	value: unknown,
 	where: string,
@@ -63,6 +68,7 @@ export function parseCommands(
 	mayRun: boolean,
 	info: CommandInfos = {},
 	have: UserCommands = {},
+	waits: (steps: string[]) => boolean = runsShell,
 ): UserCommands {
 	const out: UserCommands = {};
 	if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -98,10 +104,10 @@ export function parseCommands(
 			warnings.push(shape(name));
 			continue;
 		}
-		if (!mayRun && runsShell(steps)) {
+		if (!mayRun && waits(steps)) {
 			gated.push(`commands.${name}`);
 			// it completes, and says why it doesn't run yet (unless one of yours by that name runs instead)
-			if (!have[name]) info[name] = { ...(description ? { description } : {}), waitsForTrust: true };
+			if (!have[name]) info[name] = { ...(description ? { description } : {}), waitsForTrust: true, ...(runsShell(steps) ? {} : { exOnly: true }) };
 			continue;
 		}
 		out[name] = steps.map(normalizeStep);
@@ -121,7 +127,12 @@ export function showCommand(name: string, steps: string[], info?: CommandInfo): 
 	return `${name} = ${steps.join(" | ")}${info?.description ? ` · ${info.description}` : ""}`;
 }
 
-/** What Tab offers for your commands: each name with its hint (its description; "(waits for :trust)" for a project's shell command before :trust). */
+/** Why running a project's command does nothing yet (it waits for :trust). */
+export function waitsMessage(name: string, info: CommandInfo, project: string): string {
+	return `${name} runs ${info.exOnly ? "risky ex" : "shell"} commands from ${project}: it waits for :trust`;
+}
+
+/** What Tab offers for your commands: each name with its hint (its description; "(waits for :trust)" for a project's command that waits for :trust). */
 export function commandCompletions(commands: UserCommands, info: CommandInfos): { name: string; hint: string }[] {
 	const out = Object.keys(commands).map((name) => ({ name, hint: info[name]?.description ?? "" }));
 	for (const [name, i] of Object.entries(info)) {
