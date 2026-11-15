@@ -403,7 +403,7 @@ While vigent runs:
 - `:delcommand Name` forgets one.
 - `:!{cmd}` runs a shell command once, the same way.
 
-In a project's `.vigent.toml`, a command with a shell step waits for `:trust`. Commands made only of ex commands don't. One that waits still completes, marked `(waits for :trust)`, and running it says so instead of `Not an editor command`. Once you `:trust` the file, it runs.
+In a project's `.vigent.toml`, a command waits for `:trust` when a step is a shell command, or an ex command that could run one or change what runs: the same lines that hold back [a project's mapping](#a-projects-mappings), like `nnoremap j :!make<CR>`, `command Y !make`, `normal …`, `permissions allow …`, `w! notes.md` or `serve`, or a call to a command (the file's or yours) whose steps do. Commands whose ex steps are all safe, like `new -t review {args}` or `colorscheme nord`, apply right away. One that waits still completes, marked `(waits for :trust)`, and running it says so instead of `Not an editor command` (`:X runs risky ex commands from .vigent.toml: it waits for :trust`). Once you `:trust` the file, it runs.
 
 Commands other people shared are in the [registry](registry.md): `vigent add --list command` lists them, and `vigent add land` adds `:Land` (the tests, then `:pr`) and its `<leader>L` mapping to your config.toml, after showing you every shell step.
 
@@ -411,7 +411,7 @@ Commands other people shared are in the [registry](registry.md): `vigent add --l
 
 A `.vigent.toml` at the root of a repository is read on top of your `~/.config/vigent/config.toml`, so a team can commit its theme, templates, engine, worktree layout, keys and hooks once. Where both set something, the project wins; tables merge key by key (setting `model` under `[engines.claude]` keeps your `effort`).
 
-The parts that run programs only count once you trust the file: `[hooks]`, `args` under `[engines.*]`, the `command` of [your own engines](#your-own-engines), [commands](#commands) with a shell step, Claude Code's `allow` rules, and [mappings](#a-projects-mappings) that can run shell commands or define commands or mappings. Until then vigent says what's waiting (`.vigent.toml wants to run commands (hooks.worktree_created, keys.normal.j): :trust allows them`) and uses the rest. Trust it with **`:trust`** in vigent or **`vigent trust`** in the project. Trust is for the file as it is: when it changes, vigent asks again. Your own config.toml is always trusted.
+The parts that run programs only count once you trust the file: `[hooks]`, `args` under `[engines.*]`, the `command` of [your own engines](#your-own-engines), Claude Code's `allow` rules, and [commands](#commands) and [mappings](#a-projects-mappings) that can run shell commands, define commands or mappings, write a file they name or start `:serve`. Until then vigent says what's waiting (`.vigent.toml wants to run commands (hooks.worktree_created, commands.X, keys.normal.j): :trust allows them`) and uses the rest. A command or mapping that waits only because it calls one of your own commands (`":Test<CR>"`, with your `Test = "!npm test"`) is named too, there and when you trust the file. Trust it with **`:trust`** in vigent or **`vigent trust`** in the project; both say what now runs. Trust is for the file as it is: when it changes, vigent asks again. Your own config.toml is always trusted.
 
 ## `[hooks]`
 
@@ -470,12 +470,14 @@ When the right-hand side is other keys, they always get their built-in meaning, 
 
 ### A project's mappings
 
-In a project's `.vigent.toml`, a mapping that can run a shell command, or define commands or mappings, waits for [`:trust`](#a-projects-own-config-vigenttoml) like the project's hooks do. vigent works out every command line the right-hand side can run, however it gets there: `":!make<CR>"`, raw keys like `"q:!make<CR>"`, a list like `[":", "!make", "<CR>"]`, a `[keys.command]` mapping that types `!make<CR>`, or INSERT's `"<Esc>:!make<CR>"`. A mapping waits when one of those lines
+In a project's `.vigent.toml`, a mapping that can run a shell command, define commands or mappings, write a file it names or start `:serve` waits for [`:trust`](#a-projects-own-config-vigenttoml) like the project's hooks do. vigent works out every command line the right-hand side can run, however it gets there: `":!make<CR>"`, raw keys like `"q:!make<CR>"`, a list like `[":", "!make", "<CR>"]`, a `[keys.command]` mapping that types `!make<CR>`, or INSERT's `"<Esc>:!make<CR>"`. A mapping waits when one of those lines
 
 - is a shell command (`:!make`, `:%!sort`),
 - defines or replays: `:command`, `:delcommand`, `:map`, `:nnoremap` and the rest, `:normal`, `:execute`, `:source`,
 - trusts or allows: `:trust`, `:permissions allow`,
-- calls a command whose steps do one of these, or
+- writes the transcript over a file: `:w` or `:write` with a file or `!` (`:w notes.md`, `:w!`; `:wq` and `:x` count the same way: vim writes with them, though vigent's only quit). A bare `:w` doesn't wait: it only makes a new `<agent>.md` in the current folder, and never overwrites one,
+- opens your agents to the network: `:serve`, `:serve local`, `:serve 9000` (`:serve stop` doesn't wait),
+- calls a command whose steps do one of these (the file's or yours), or
 - can't be told apart, because the mapping moves the cursor, completes, or recalls history before it presses Enter.
 
 Until then the key keeps its built-in meaning, and vigent names it in the trust message as `keys.<mode>.<lhs>`, e.g. `keys.normal.j`. Mappings like `":colorscheme nord<CR>"`, `":new "` and `"session.next"` apply right away. Your own config.toml maps what it likes.
