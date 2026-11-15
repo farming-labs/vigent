@@ -30,7 +30,7 @@ export default function RegistryPage() {
             </div>
             <div className="l">
               <p className="t sub">
-                Each entry is one small file in the vigent repo, checked by vigent's own loader before it's listed. Themes, templates and keymaps are only data. Engines and setups run commands, so the card lists every one, <span className="kw">vigent add</span> shows them
+                Each entry is one small file in the vigent repo, checked by vigent's own loader before it's listed. Themes and templates are only data. Keymaps, commands, engines and setups can run commands, so the card lists every one, <span className="kw">vigent add</span> shows them
                 before it asks, and a setup's wait for <span className="kw">:trust</span>.
               </p>
             </div>
