@@ -3,6 +3,7 @@
  * or Codex. vigent bundles none of it; it starts `pi --mode rpc` per agent.
  */
 import { execFile } from "node:child_process";
+import { oneLine } from "./printable.js";
 
 export const PI_BIN = "pi";
 export const PI_INSTALL = "npm install -g @mariozechner/pi-coding-agent";
@@ -23,7 +24,7 @@ export function parseModelList(text: string): { provider: string; id: string }[]
 	const out: { provider: string; id: string }[] = [];
 	let table = false;
 	for (const line of text.split("\n")) {
-		const [provider, id] = line.trim().split(/\s+/);
+		const [provider, id] = oneLine(line).split(" ");
 		if (provider === "provider" && id === "model") {
 			table = true;
 			continue;

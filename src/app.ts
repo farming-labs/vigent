@@ -43,7 +43,7 @@ import { HunkReview } from "./hunk-review.js";
 import { listFiles, MENTION, mentionable } from "./attach.js";
 import { allTemplates, fillTemplate, needsTask, type Template } from "./templates.js";
 import type { PiUiHost } from "./pi-ui.js";
-import { type AllowChoice, CLI_ADAPTERS, type CliSession, type Denial, describeDenial } from "./cli-engines.js";
+import { type AllowChoice, allowDetails, CLI_ADAPTERS, type CliSession, type Denial, describeDenial } from "./cli-engines.js";
 import { type ServeHandle, type ServeHost, type ServeOptions, startServer } from "./serve.js";
 import { HOOK_TIMEOUT_MS, type HookName, type Hooks, lastLine, runHook, took } from "./hooks.js";
 import { PROJECT_CONFIG, settingsValues } from "./config.js";
@@ -3494,7 +3494,7 @@ export class App implements Component {
 	askToAllow(s: Session, blocked: Denial[], rules: string[]): Promise<AllowChoice> {
 		return new Promise((resolve) => {
 			if (!this.onScreen(s) || !this.terminalFocused) this.alert(alertSequence(`vigent: '${s.name}' needs a permission`, this.ui.notify));
-			const what = [...new Set(blocked.map(describeDenial))].join(" · ");
+			const what = [...new Set(blocked.map((d) => describeDenial(d)))].join(" · ");
 			const list = rules.join(", ");
 			this.openChoices(
 				`'${s.name}' was blocked · ${what}`,
@@ -3506,7 +3506,8 @@ export class App implements Component {
 				"",
 				false,
 				(v) => resolve(v === "allow once" ? "once" : v === "always allow" ? "always" : undefined),
-				{ onCancel: () => resolve(undefined), rows: 3 },
+				// the notes are cut to the picker's width: what was blocked and every rule show in full above them
+				{ onCancel: () => resolve(undefined), rows: 3, details: allowDetails(blocked, rules), detailRows: Math.max(4, this.terminal.rows - 12) },
 			);
 			this.tui.requestRender();
 		});

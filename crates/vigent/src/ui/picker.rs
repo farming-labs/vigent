@@ -11,7 +11,7 @@
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
-use super::text::{fit, width};
+use super::text::{Seg, fit, segs_plain, width, wrap_segs};
 use crate::app::App;
 use crate::theme::{Attr, Theme};
 
@@ -79,6 +79,14 @@ pub struct Picker {
     pub id: u64,
     /// the theme picker's live preview
     pub live: Option<Live>,
+    /// Text above the list that the choices are about, every word of it
+    /// shown: each entry wraps to the picker's width. Past `detail_rows` rows
+    /// it scrolls (Ctrl-d / Ctrl-u, Ctrl-e / Ctrl-y) (src/picker.ts details).
+    pub details: Vec<String>,
+    pub detail_rows: usize,
+    pub detail_top: usize,
+    /// how many rows the details wrapped to at the last draw
+    detail_count: std::cell::Cell<usize>,
 }
 
 impl Picker {
@@ -99,6 +107,10 @@ impl Picker {
             back_out: None,
             id: NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             live: None,
+            details: vec![],
+            detail_rows: 10,
+            detail_top: 0,
+            detail_count: std::cell::Cell::new(0),
         };
         if let Some(items) = items {
             p.set_items(items);
@@ -167,9 +179,24 @@ impl Picker {
         self.scroll = self.scroll.min(rows.len().saturating_sub(self.rows));
     }
 
-    /// The picker's height on screen.
-    pub fn height(&self) -> usize {
-        self.rows + 4
+    /// The details wrapped to a picker `w` columns wide.
+    fn detail_lines(&self, w: usize) -> Vec<String> {
+        let inner = w.max(20) - 2;
+        self.details.iter().flat_map(|d| wrap_segs(&[Seg::new(d, Style::default())], inner - 2).into_iter().map(|row| segs_plain(&row))).collect()
+    }
+
+    /// The rows the details take on screen: what shows of them, a row saying
+    /// where in them you are when they don't all fit, and the line under them.
+    fn detail_height(&self, w: usize) -> usize {
+        if self.details.is_empty() {
+            return 0;
+        }
+        self.detail_lines(w).len().min(self.detail_rows.max(2)) + 1
+    }
+
+    /// The picker's height on screen, `w` columns wide.
+    pub fn height(&self, w: usize) -> usize {
+        self.rows + 4 + self.detail_height(w)
     }
 
     pub fn lines(&self, w: usize, t: &Theme, icons: &str) -> Vec<Line<'static>> {
@@ -204,6 +231,24 @@ impl Picker {
             Span::styled(title.clone(), on("FloatTitle")),
             Span::styled(format!("{}{tr}", h.repeat(inner.saturating_sub(1 + width(&title)))), border),
         ])];
+        if !self.details.is_empty() {
+            let all = self.detail_lines(w);
+            self.detail_count.set(all.len());
+            let max = self.detail_rows.max(2);
+            // the last row says where in them you are when they don't all fit
+            let fits = all.len() <= max;
+            let room = if fits { all.len() } else { max - 1 };
+            let top = self.detail_top.min(all.len() - room);
+            for l in &all[top..top + room] {
+                lines.push(row(vec![Span::styled(format!(" {l}"), on("NormalFloat"))], 1 + width(l), on("NormalFloat")));
+            }
+            if !fits {
+                let at = fit(&format!(" rows {}-{} of {} · Ctrl-d/Ctrl-u scroll", top + 1, top + room, all.len()), inner);
+                let n = width(&at);
+                lines.push(row(vec![Span::styled(at, on("Comment"))], n, on("NormalFloat")));
+            }
+            lines.push(Line::from(Span::styled(format!("{lt}{}{rt}", h.repeat(inner)), border)));
+        }
         if self.searching {
             let sel = t.hl("PmenuSel");
             lines.push(row(
@@ -342,6 +387,16 @@ pub fn feed(p: &mut Picker, key: &str) -> Outcome {
     } else if ["<Up>", "<S-Tab>", "<C-p>", "<C-k>"].contains(&key) {
         mv(p, -1);
         moved = true;
+    } else if !p.details.is_empty() && !p.searching && ["<C-d>", "<C-u>", "<C-e>", "<C-y>"].contains(&key) {
+        let half = (p.detail_rows.max(2) / 2).max(1) as isize;
+        let by = match key {
+            "<C-d>" => half,
+            "<C-u>" => -half,
+            "<C-e>" => 1,
+            _ => -1,
+        };
+        let last = (p.detail_count.get() + 1).saturating_sub(p.detail_rows.max(2)) as isize;
+        p.detail_top = (p.detail_top as isize + by).clamp(0, last.max(0)) as usize;
     } else if p.searching {
         match key {
             "<Esc>" => p.searching = false,
