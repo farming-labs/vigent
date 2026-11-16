@@ -46,7 +46,7 @@ import type { PiUiHost } from "./pi-ui.js";
 import { type AllowChoice, CLI_ADAPTERS, type CliSession, type Denial, describeDenial } from "./cli-engines.js";
 import { type ServeHandle, type ServeHost, type ServeOptions, startServer } from "./serve.js";
 import { HOOK_TIMEOUT_MS, type HookName, type Hooks, lastLine, runHook, took } from "./hooks.js";
-import { PROJECT_CONFIG } from "./config.js";
+import { PROJECT_CONFIG, settingsValues } from "./config.js";
 import { didYouMean } from "./suggest.js";
 import { alertSequence, NOTIFY_MODES, type NotifyMode } from "./notify.js";
 import { VERSION_TEXT } from "./version.js";
@@ -461,6 +461,8 @@ export class App implements Component {
 	preferredEngine: EngineId | "auto" = "auto";
 	/** key changes made in :settings, saved with w: lhs -> rhs (false unbinds) */
 	private keyChanges = new Map<string, string | false>();
+	/** what the project's .vigent.toml set over your config.toml, as settingsValues has it: :settings never saves these as they are */
+	projectSettings = new Map<string, string>();
 	/** the engine :new uses without --engine */
 	defaultEngine: () => EngineId = () => "pi";
 
@@ -1824,6 +1826,11 @@ export class App implements Component {
 	layout: Layout = defaultLayout();
 	/** reads the saved permissions into engineOptions again (set by the CLI; it knows where the config files are) */
 	reloadPermissions: () => void = () => {};
+	/**
+	 * An engine's options as your own config.toml has them, without a project's .vigent.toml:
+	 * what :permissions changes and saves (set by the CLI; here, the ones in use)
+	 */
+	ownEngineOptions: (id: EngineId) => EngineOptions = (id) => this.engineOptions[id] ?? {};
 	/** :trust (set by the CLI; it knows where the project's config is) */
 	trustProject: () => string = () => `no ${PROJECT_CONFIG} in this project`;
 	/** runs a hook (replaced in tests) */
@@ -2639,7 +2646,7 @@ export class App implements Component {
 		const items = this.allTemplates().map((t) => {
 			const how = [t.engine ? ENGINE_NAMES[t.engine] : "", t.model ?? "", t.effort ?? ""].filter(Boolean).join(" · ");
 			const what = t.description ?? t.prompt.split("\n")[0];
-			return { value: t.name, note: `${what}${how ? ` (${how})` : ""}${t.builtin ? "" : " · yours"}` };
+			return { value: t.name, note: `${what}${how ? ` (${how})` : ""}${t.builtin ? "" : t.project ? " · .vigent.toml" : " · yours"}` };
 		});
 		const place = { width: Math.min(96, this.terminal.columns - 4), anchor: "center" as const };
 		this.openChoices("Start an agent from a template", items, "", false, (name) => {
@@ -2947,21 +2954,32 @@ export class App implements Component {
 
 	/** The arguments an engine runs with: yours from [engines.<id>] args, else its defaults. */
 	private engineArgs(id: "claude" | "codex" | "gemini" | "cursor"): string[] {
-		return [...(this.engineOptions[id]?.args ?? CLI_ADAPTERS[id].defaultArgs)];
+		return [...(this.engineOptions[id]?.args ?? this.defaultArgs(id))];
 	}
 
-	private setEngineOption<K extends keyof EngineOptions>(id: EngineId, key: K, value: EngineOptions[K]) {
+	private defaultArgs(id: "claude" | "codex" | "gemini" | "cursor"): string[] {
+		return [...CLI_ADAPTERS[id].defaultArgs];
+	}
+
+	/**
+	 * Change one permission: `update` turns the value in use into the new one, and your own
+	 * config.toml's value into what's saved. So a trusted project's args or allow rules apply
+	 * here but stay in its .vigent.toml; only your change goes into config.toml.
+	 */
+	private setEngineOption<K extends keyof EngineOptions>(id: EngineId, key: K, update: (now: EngineOptions[K] | undefined) => EngineOptions[K]) {
+		const own = update(structuredClone(this.ownEngineOptions(id)[key]));
 		const opts = (this.engineOptions[id] ??= {});
+		const value = update(opts[key]);
 		if (value === undefined) delete opts[key];
 		else opts[key] = value;
-		this.permissionsChanged.add(id);
+		this.permissionsChanged.set(`${id}.${key}`, { id, key, value: own });
 		// kept at once: a permission you set stays set, across agents and restarts
 		const saved = this.savePermissions();
 		if (saved.startsWith("couldn't")) this.setMessage(`${saved} (it applies until vigent quits)`, "WarningMsg");
 	}
 
-	/** engines whose permissions :permissions changed (what savePermissions writes) */
-	private permissionsChanged = new Set<EngineId>();
+	/** what :permissions changed and savePermissions writes: [engines.<id>] key = value, as your config.toml should have it */
+	private permissionsChanged = new Map<string, { id: EngineId; key: keyof EngineOptions; value: unknown }>();
 
 	/**
 	 * `:permissions`: what each agent may do without asking, toggled in place;
@@ -2974,12 +2992,15 @@ export class App implements Component {
 			this.reloadPermissions();
 			// several rules may follow; a rule's own spaces stay inside its parentheses: Bash(npm run test:*)
 			const rules = m[2].match(/[^\s(]+(?:\([^)]*\))?/g) ?? [];
-			const allow = new Set(this.engineOptions.claude?.allow ?? []);
-			for (const rule of rules) {
-				if (m[1] === "allow") allow.add(rule);
-				else allow.delete(rule);
-			}
-			this.setEngineOption("claude", "allow", [...allow]);
+			const verb = m[1];
+			this.setEngineOption("claude", "allow", (now) => {
+				const allow = new Set(now ?? []);
+				for (const rule of rules) {
+					if (verb === "allow") allow.add(rule);
+					else allow.delete(rule);
+				}
+				return [...allow];
+			});
 			this.setMessage(`${m[1] === "allow" ? "allowed" : "removed"} ${rules.join(" ")} for Claude Code (saved; from its next prompt)`, "Comment");
 			return;
 		}
@@ -3005,14 +3026,20 @@ export class App implements Component {
 				section: name("claude"),
 				label: "Mode",
 				value: () => flagValue(this.engineArgs("claude"), "--permission-mode") ?? "default",
-				change: (d) => this.setEngineOption("claude", "args", withFlag(this.engineArgs("claude"), "--permission-mode", cycle(CLAUDE_MODES, flagValue(this.engineArgs("claude"), "--permission-mode") ?? "default", d))),
+				change: (d) => {
+					const mode = cycle(CLAUDE_MODES, flagValue(this.engineArgs("claude"), "--permission-mode") ?? "default", d);
+					this.setEngineOption("claude", "args", (a) => withFlag(a ?? this.defaultArgs("claude"), "--permission-mode", mode));
+				},
 				hint: "acceptEdits: edits go ahead, other tools need a rule · default: only what's allowed · plan: read-only · bypassPermissions: everything (in its worktree)",
 			},
 			{
 				section: name("claude"),
 				label: "Ask when it's refused a tool",
 				value: () => onOff(!!this.engineOptions.claude?.ask),
-				change: () => this.setEngineOption("claude", "ask", this.engineOptions.claude?.ask ? undefined : true),
+				change: () => {
+					const ask = this.engineOptions.claude?.ask ? undefined : true;
+					this.setEngineOption("claude", "ask", () => ask);
+				},
 				hint: "allow once / always allow / no, then the agent runs again with the permission",
 			},
 			...CLAUDE_PRESETS.map(
@@ -3020,7 +3047,10 @@ export class App implements Component {
 					section: name("claude"),
 					label: `Allow ${label}`,
 					value: () => (allow().includes(rule) ? `on  ${rule}` : "off"),
-					change: () => this.setEngineOption("claude", "allow", allow().includes(rule) ? allow().filter((r) => r !== rule) : [...allow(), rule]),
+					change: () => {
+						const on = allow().includes(rule);
+						this.setEngineOption("claude", "allow", (now = []) => (on ? now.filter((r) => r !== rule) : now.includes(rule) ? now : [...now, rule]));
+					},
 					hint: `the rule ${rule}, without asking`,
 				}),
 			),
@@ -3037,7 +3067,10 @@ export class App implements Component {
 				section: name("codex"),
 				label: "Sandbox",
 				value: () => codexOption(this.engineArgs("codex"), "sandbox_mode") ?? "read-only",
-				change: (d) => this.setEngineOption("codex", "args", withCodexOption(this.engineArgs("codex"), "sandbox_mode", cycle(CODEX_SANDBOXES, codexOption(this.engineArgs("codex"), "sandbox_mode") ?? "read-only", d))),
+				change: (d) => {
+					const mode = cycle(CODEX_SANDBOXES, codexOption(this.engineArgs("codex"), "sandbox_mode") ?? "read-only", d);
+					this.setEngineOption("codex", "args", (a) => withCodexOption(a ?? this.defaultArgs("codex"), "sandbox_mode", mode));
+				},
 				hint: "workspace-write: it edits its worktree · read-only: looks only · danger-full-access: no sandbox",
 			},
 			{
@@ -3046,7 +3079,7 @@ export class App implements Component {
 				value: () => onOff(codexOption(this.engineArgs("codex"), "sandbox_workspace_write.network_access") === "true"),
 				change: () => {
 					const on = codexOption(this.engineArgs("codex"), "sandbox_workspace_write.network_access") === "true";
-					this.setEngineOption("codex", "args", withCodexOption(this.engineArgs("codex"), "sandbox_workspace_write.network_access", on ? undefined : true));
+					this.setEngineOption("codex", "args", (a) => withCodexOption(a ?? this.defaultArgs("codex"), "sandbox_workspace_write.network_access", on ? undefined : true));
 				},
 				hint: "the workspace-write sandbox has no network unless this is on",
 			},
@@ -3054,14 +3087,20 @@ export class App implements Component {
 				section: name("gemini"),
 				label: "Approval",
 				value: () => flagValue(this.engineArgs("gemini"), "--approval-mode") ?? "default",
-				change: (d) => this.setEngineOption("gemini", "args", withFlag(this.engineArgs("gemini"), "--approval-mode", cycle(GEMINI_APPROVALS, flagValue(this.engineArgs("gemini"), "--approval-mode") ?? "default", d))),
+				change: (d) => {
+					const mode = cycle(GEMINI_APPROVALS, flagValue(this.engineArgs("gemini"), "--approval-mode") ?? "default", d);
+					this.setEngineOption("gemini", "args", (a) => withFlag(a ?? this.defaultArgs("gemini"), "--approval-mode", mode));
+				},
 				hint: "auto_edit: edits go ahead · yolo: edits, commands and fetches too · default: headless Gemini refuses what needs approval",
 			},
 			{
 				section: name("cursor"),
 				label: "Run commands without asking",
 				value: () => onOff(this.engineArgs("cursor").includes("--force")),
-				change: () => this.setEngineOption("cursor", "args", withSwitch(this.engineArgs("cursor"), "--force", !this.engineArgs("cursor").includes("--force"))),
+				change: () => {
+					const on = !this.engineArgs("cursor").includes("--force");
+					this.setEngineOption("cursor", "args", (a) => withSwitch(a ?? this.defaultArgs("cursor"), "--force", on));
+				},
 				hint: "--force: edits and commands in its worktree (headless Cursor can't ask)",
 			},
 		];
@@ -3088,19 +3127,19 @@ export class App implements Component {
 		this.tui.requestRender();
 	}
 
-	/** Write what :permissions changed into config.toml ([engines.<id>] args, allow, ask), keeping the rest of the file. */
+	/**
+	 * Write what :permissions changed into config.toml ([engines.<id>] args, allow, ask), keeping
+	 * the rest of the file: only the options you changed, from your own values.
+	 */
 	savePermissions(): string {
 		const file = configPath();
 		try {
 			let text = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : CONFIG_TEMPLATE;
-			for (const id of this.permissionsChanged) {
-				const o = this.engineOptions[id] ?? {};
+			for (const { id, key, value } of this.permissionsChanged.values()) {
 				const section = `engines.${id}`;
-				if (o.args) text = setTomlValue(text, section, "args", JSON.stringify(o.args));
-				if (id === "claude") {
-					text = setTomlValue(text, section, "allow", JSON.stringify(o.allow ?? []));
-					text = setTomlValue(text, section, "ask", String(!!o.ask));
-				}
+				if (key === "args" && value) text = setTomlValue(text, section, "args", JSON.stringify(value));
+				else if (key === "allow") text = setTomlValue(text, section, "allow", JSON.stringify(value ?? []));
+				else if (key === "ask") text = setTomlValue(text, section, "ask", String(!!value));
 			}
 			fs.mkdirSync(path.dirname(file), { recursive: true });
 			fs.writeFileSync(file, text);
@@ -3116,20 +3155,14 @@ export class App implements Component {
 		const file = configPath();
 		try {
 			let text = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : CONFIG_TEMPLATE;
-			const ui = this.ui;
-			const set = (section: string | undefined, key: string, value: string | number | boolean) => {
-				text = setTomlValue(text, section, key, tomlValue(value));
-			};
-			set(undefined, "theme", this.painter.theme.name);
-			set(undefined, "engine", this.preferredEngine);
-			set(undefined, "leader", this.keymap.leader);
-			for (const k of ["sidebar", "sidebar_width", "sidebar_position", "number", "tilde", "icons", "termguicolors", "transparent", "whichkey", "notify"] as const) set("ui", k, ui[k]);
-			if (this.styleConfig.sidebar) set("style", "sidebar", this.styleConfig.sidebar);
-			if (this.styleConfig.messages) set("style", "messages", this.styleConfig.messages);
-			if (this.styleConfig.separators) set("style", "separators", this.styleConfig.separators);
-			set("worktree", "enabled", this.workspace.config.enabled);
-			set("worktree", "backend", this.workspace.config.backend ?? "auto");
-			for (const [lhs, rhs] of this.keyChanges) set("keys.normal", lhs, rhs);
+			const now = settingsValues({ theme: this.painter.theme.name, engine: this.preferredEngine, leader: this.keymap.leader, ui: this.ui, style: this.styleConfig, worktree: this.workspace.config });
+			for (const [name, value] of now) {
+				// the project's value, which you haven't changed: it stays in its .vigent.toml
+				if (this.projectSettings.get(name) === value) continue;
+				const dot = name.indexOf(".");
+				text = dot < 0 ? setTomlValue(text, undefined, name, value) : setTomlValue(text, name.slice(0, dot), name.slice(dot + 1), value);
+			}
+			for (const [lhs, rhs] of this.keyChanges) text = setTomlValue(text, "keys.normal", lhs, tomlValue(rhs));
 			fs.mkdirSync(path.dirname(file), { recursive: true });
 			fs.writeFileSync(file, text);
 			return `saved to ${this.shortPath(file)}`;

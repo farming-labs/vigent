@@ -174,12 +174,28 @@ pub fn reload(app: &mut App) {
     }
 }
 
-/// Change one engine's permission and save it at once.
-fn set(app: &mut App, id: &str, f: impl FnOnce(&mut EngineOptions)) {
+/// Which permission option a change is to: what [`save`] writes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Field {
+    Args,
+    Allow,
+    Ask,
+}
+
+/// An engine's options as your own config.toml has them, without a project's .vigent.toml.
+pub fn own_options(id: &str) -> EngineOptions {
+    config::load(&config::config_path(), LoadOptions::default()).config.engine_options(id).cloned().unwrap_or_default()
+}
+
+/// Change one permission and save it at once: `f` changes the options in use, and your own
+/// config.toml's options into what's saved. So a trusted project's args or allow rules apply
+/// here but stay in its .vigent.toml; only your change goes into config.toml.
+fn set(app: &mut App, id: &str, field: Field, f: impl Fn(&mut EngineOptions)) {
+    let mut own = own_options(id);
+    f(&mut own);
     f(options_mut(app, id));
-    if !app.cfg.permissions_changed.iter().any(|x| x == id) {
-        app.cfg.permissions_changed.push(id.to_string());
-    }
+    app.cfg.permissions_changed.retain(|(i, k, _)| !(i == id && *k == field));
+    app.cfg.permissions_changed.push((id.to_string(), field, own));
     let saved = save(app);
     if saved.starts_with("couldn't") {
         app.say(format!("{saved} (it applies until vigent quits)"), "WarningMsg");
@@ -191,20 +207,22 @@ pub fn config_text(file: &Path) -> String {
     if file.exists() { std::fs::read_to_string(file).unwrap_or_default() } else { config::CONFIG_TEMPLATE.to_string() }
 }
 
-/// Write what :permissions changed into config.toml ([engines.<id>] args, allow, ask), keeping the rest of the file.
+/// Write what :permissions changed into config.toml ([engines.<id>] args, allow, ask), keeping
+/// the rest of the file: only the options you changed, from your own values.
 pub fn save(app: &mut App) -> String {
     let file = config::config_path();
     let mut text = config_text(&file);
     let json = |v: &[String]| serde_json::to_string(v).unwrap_or_default();
-    for id in &app.cfg.permissions_changed {
-        let o = app.config.engine_options(id).cloned().unwrap_or_default();
+    for (id, field, o) in &app.cfg.permissions_changed {
         let section = format!("engines.{id}");
-        if let Some(args) = &o.args {
-            text = crate::config_edit::set_toml_value(&text, Some(&section), "args", &json(args));
-        }
-        if id == "claude" {
-            text = crate::config_edit::set_toml_value(&text, Some(&section), "allow", &json(o.allow.as_deref().unwrap_or_default()));
-            text = crate::config_edit::set_toml_value(&text, Some(&section), "ask", if o.ask == Some(true) { "true" } else { "false" });
+        match field {
+            Field::Args => {
+                if let Some(args) = &o.args {
+                    text = crate::config_edit::set_toml_value(&text, Some(&section), "args", &json(args));
+                }
+            }
+            Field::Allow => text = crate::config_edit::set_toml_value(&text, Some(&section), "allow", &json(o.allow.as_deref().unwrap_or_default())),
+            Field::Ask => text = crate::config_edit::set_toml_value(&text, Some(&section), "ask", if o.ask == Some(true) { "true" } else { "false" }),
         }
     }
     let r = file.parent().map(std::fs::create_dir_all).unwrap_or(Ok(())).and_then(|_| std::fs::write(&file, text));
@@ -249,17 +267,19 @@ pub fn exec(app: &mut App, arg: &str) {
     if matches!(verb, "allow" | "remove" | "unallow" | "deny") && !rest.is_empty() {
         reload(app);
         let rules = split_rules(rest);
-        let mut allow = app.config.engine_options("claude").and_then(|o| o.allow.clone()).unwrap_or_default();
-        for r in &rules {
-            if verb == "allow" {
-                if !allow.contains(r) {
-                    allow.push(r.clone());
+        set(app, "claude", Field::Allow, |o| {
+            let mut allow = o.allow.clone().unwrap_or_default();
+            for r in &rules {
+                if verb == "allow" {
+                    if !allow.contains(r) {
+                        allow.push(r.clone());
+                    }
+                } else {
+                    allow.retain(|x| x != r);
                 }
-            } else {
-                allow.retain(|x| x != r);
             }
-        }
-        set(app, "claude", |o| o.allow = Some(allow));
+            o.allow = Some(allow);
+        });
         let did = if verb == "allow" { "allowed" } else { "removed" };
         return app.say(format!("{did} {} for Claude Code (saved; from its next prompt)", rules.join(" ")), "Comment");
     }
@@ -302,10 +322,9 @@ pub fn open(app: &mut App) {
             "Mode",
             |a| flag_value(&engine_args(a, "claude"), "--permission-mode").unwrap_or_else(|| "default".into()),
             |a, d| {
-                let args = engine_args(a, "claude");
-                let now = flag_value(&args, "--permission-mode").unwrap_or_else(|| "default".into());
-                let next = with_flag(&args, "--permission-mode", Some(cycle(&CLAUDE_MODES, &now, d)));
-                set(a, "claude", |o| o.args = Some(next));
+                let now = flag_value(&engine_args(a, "claude"), "--permission-mode").unwrap_or_else(|| "default".into());
+                let mode = cycle(&CLAUDE_MODES, &now, d);
+                set(a, "claude", Field::Args, |o| o.args = Some(with_flag(&o.args.clone().unwrap_or_else(|| default_args("claude")), "--permission-mode", Some(mode))));
             },
             "acceptEdits: edits go ahead, other tools need a rule · default: only what's allowed · plan: read-only · bypassPermissions: everything (in its worktree)",
         ),
@@ -315,7 +334,7 @@ pub fn open(app: &mut App) {
             |a| on_off(a.config.engine_options("claude").and_then(|o| o.ask) == Some(true)),
             |a, _| {
                 let on = a.config.engine_options("claude").and_then(|o| o.ask) == Some(true);
-                set(a, "claude", |o| o.ask = if on { None } else { Some(true) });
+                set(a, "claude", Field::Ask, |o| o.ask = if on { None } else { Some(true) });
             },
             "allow once / always allow / no, then the agent runs again with the permission",
         ),
@@ -326,13 +345,16 @@ pub fn open(app: &mut App) {
             &format!("Allow {label}"),
             Box::new(move |a: &App| if allow(a).iter().any(|r| r == rule) { format!("on  {rule}") } else { "off".into() }),
             Box::new(move |a: &mut App, _| {
-                let mut list = allow(a);
-                if list.iter().any(|r| r == rule) {
-                    list.retain(|r| r != rule);
-                } else {
-                    list.push(rule.to_string());
-                }
-                set(a, "claude", |o| o.allow = Some(list));
+                let on = allow(a).iter().any(|r| r == rule);
+                set(a, "claude", Field::Allow, |o| {
+                    let mut list = o.allow.clone().unwrap_or_default();
+                    if on {
+                        list.retain(|r| r != rule);
+                    } else if !list.iter().any(|r| r == rule) {
+                        list.push(rule.to_string());
+                    }
+                    o.allow = Some(list);
+                });
             }),
             &format!("the rule {rule}, without asking"),
         ));
@@ -352,10 +374,9 @@ pub fn open(app: &mut App) {
         "Sandbox",
         |a| codex_option(&engine_args(a, "codex"), "sandbox_mode").unwrap_or_else(|| "read-only".into()),
         |a, d| {
-            let args = engine_args(a, "codex");
-            let now = codex_option(&args, "sandbox_mode").unwrap_or_else(|| "read-only".into());
-            let next = with_codex_option(&args, "sandbox_mode", Some(CodexValue::Str(cycle(&CODEX_SANDBOXES, &now, d))));
-            set(a, "codex", |o| o.args = Some(next));
+            let now = codex_option(&engine_args(a, "codex"), "sandbox_mode").unwrap_or_else(|| "read-only".into());
+            let mode = cycle(&CODEX_SANDBOXES, &now, d);
+            set(a, "codex", Field::Args, |o| o.args = Some(with_codex_option(&o.args.clone().unwrap_or_else(|| default_args("codex")), "sandbox_mode", Some(CodexValue::Str(mode)))));
         },
         "workspace-write: it edits its worktree · read-only: looks only · danger-full-access: no sandbox",
     ));
@@ -364,10 +385,11 @@ pub fn open(app: &mut App) {
         "Network (fetch, git, gh)",
         |a| on_off(codex_option(&engine_args(a, "codex"), "sandbox_workspace_write.network_access").as_deref() == Some("true")),
         |a, _| {
-            let args = engine_args(a, "codex");
-            let on = codex_option(&args, "sandbox_workspace_write.network_access").as_deref() == Some("true");
-            let next = with_codex_option(&args, "sandbox_workspace_write.network_access", if on { None } else { Some(CodexValue::Bool(true)) });
-            set(a, "codex", |o| o.args = Some(next));
+            let on = codex_option(&engine_args(a, "codex"), "sandbox_workspace_write.network_access").as_deref() == Some("true");
+            set(a, "codex", Field::Args, |o| {
+                let args = o.args.clone().unwrap_or_else(|| default_args("codex"));
+                o.args = Some(with_codex_option(&args, "sandbox_workspace_write.network_access", if on { None } else { Some(CodexValue::Bool(true)) }));
+            });
         },
         "the workspace-write sandbox has no network unless this is on",
     ));
@@ -377,10 +399,9 @@ pub fn open(app: &mut App) {
         "Approval",
         |a| flag_value(&engine_args(a, "gemini"), "--approval-mode").unwrap_or_else(|| "default".into()),
         |a, d| {
-            let args = engine_args(a, "gemini");
-            let now = flag_value(&args, "--approval-mode").unwrap_or_else(|| "default".into());
-            let next = with_flag(&args, "--approval-mode", Some(cycle(&GEMINI_APPROVALS, &now, d)));
-            set(a, "gemini", |o| o.args = Some(next));
+            let now = flag_value(&engine_args(a, "gemini"), "--approval-mode").unwrap_or_else(|| "default".into());
+            let mode = cycle(&GEMINI_APPROVALS, &now, d);
+            set(a, "gemini", Field::Args, |o| o.args = Some(with_flag(&o.args.clone().unwrap_or_else(|| default_args("gemini")), "--approval-mode", Some(mode))));
         },
         "auto_edit: edits go ahead · yolo: edits, commands and fetches too · default: headless Gemini refuses what needs approval",
     ));
@@ -390,10 +411,8 @@ pub fn open(app: &mut App) {
         "Run commands without asking",
         |a| on_off(engine_args(a, "cursor").iter().any(|x| x == "--force")),
         |a, _| {
-            let args = engine_args(a, "cursor");
-            let on = args.iter().any(|x| x == "--force");
-            let next = with_switch(&args, "--force", !on);
-            set(a, "cursor", |o| o.args = Some(next));
+            let on = engine_args(a, "cursor").iter().any(|x| x == "--force");
+            set(a, "cursor", Field::Args, |o| o.args = Some(with_switch(&o.args.clone().unwrap_or_else(|| default_args("cursor")), "--force", !on)));
         },
         "--force: edits and commands in its worktree (headless Cursor can't ask)",
     ));

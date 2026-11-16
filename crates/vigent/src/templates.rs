@@ -15,7 +15,13 @@ pub fn open(app: &mut App) {
             let how: Vec<String> = [t.engine.as_deref().map(crate::engines::engine_name), t.model.clone(), t.effort.clone()].into_iter().flatten().filter(|s| !s.is_empty()).collect();
             let what = t.description.clone().unwrap_or_else(|| t.prompt.lines().next().unwrap_or_default().to_string());
             let how = if how.is_empty() { String::new() } else { format!(" ({})", how.join(" · ")) };
-            let yours = if is_builtin { "" } else { " · yours" };
+            let yours = if is_builtin {
+                ""
+            } else if t.project {
+                " · .vigent.toml"
+            } else {
+                " · yours"
+            };
             Choice::new(&t.name, None, Some(&format!("{what}{how}{yours}")))
         })
         .collect();

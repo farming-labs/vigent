@@ -28,8 +28,9 @@ use crate::ui::text::width;
 pub struct ConfigState {
     /// the :settings / :permissions float, when open (keys go to it)
     pub panel: Option<Panel>,
-    /// engines whose permissions :permissions changed (what permissions::save writes)
-    pub permissions_changed: Vec<String>,
+    /// what :permissions changed (what permissions::save writes): the engine, the option, and
+    /// that engine's options as your config.toml should have them
+    pub permissions_changed: Vec<(String, crate::permissions::Field, crate::config::EngineOptions)>,
     /// NORMAL-mode keys :settings rebound: lhs -> rhs (None: unmapped), what w writes to [keys.normal]
     pub key_changes: Vec<(String, Option<String>)>,
     /// --demo, or nothing can run agents: scripted sessions (src/demo.ts)
@@ -633,40 +634,20 @@ pub fn save(app: &mut App) -> String {
     use crate::config_edit::{set_toml_value, toml_str};
     let file = config::config_path();
     let mut text = crate::permissions::config_text(&file);
-    let ui = &app.config.ui;
-    let b = |v: bool| v.to_string();
-    let mut set = |section: Option<&str>, key: &str, value: String| text = set_toml_value(&text, section, key, &value);
-    set(None, "theme", toml_str(&app.theme.name));
-    set(None, "engine", toml_str(app.config.engine.as_deref().unwrap_or("auto")));
-    set(None, "leader", toml_str(&app.keymap.leader));
-    set(Some("ui"), "sidebar", b(ui.sidebar));
-    set(Some("ui"), "sidebar_width", ui.sidebar_width.to_string());
-    set(Some("ui"), "sidebar_position", toml_str(&ui.sidebar_position));
-    set(Some("ui"), "number", b(ui.number));
-    set(Some("ui"), "tilde", b(ui.tilde));
-    set(Some("ui"), "icons", toml_str(&ui.icons));
-    set(Some("ui"), "termguicolors", b(ui.termguicolors));
-    set(
-        Some("ui"),
-        "transparent",
-        match ui.transparent {
-            Transparent::Auto => toml_str("auto"),
-            Transparent::On => "true".into(),
-            Transparent::Off => "false".into(),
-        },
-    );
-    set(Some("ui"), "whichkey", b(ui.whichkey));
-    set(Some("ui"), "notify", toml_str(&ui.notify));
-    let st = &app.config.style;
-    for (k, v) in [("sidebar", &st.sidebar), ("messages", &st.messages), ("separators", &st.separators)] {
-        if let Some(v) = v {
-            set(Some("style"), k, toml_str(v));
+    let c = &app.config;
+    let now = config::settings_values(Some(&app.theme.name), Some(c.engine.as_deref().unwrap_or("auto")), Some(&app.keymap.leader), &c.ui, &c.style, &c.worktree);
+    for (name, value) in now {
+        // the project's value, which you haven't changed: it stays in its .vigent.toml
+        if c.project_settings.iter().any(|(k, v)| *k == name && *v == value) {
+            continue;
         }
+        text = match name.split_once('.') {
+            Some((section, key)) => set_toml_value(&text, Some(section), key, &value),
+            None => set_toml_value(&text, None, &name, &value),
+        };
     }
-    set(Some("worktree"), "enabled", b(app.config.worktree.enabled));
-    set(Some("worktree"), "backend", toml_str(&app.config.worktree.backend));
     for (lhs, rhs) in &app.cfg.key_changes {
-        set(Some("keys.normal"), lhs, rhs.as_deref().map(toml_str).unwrap_or_else(|| "false".into()));
+        text = set_toml_value(&text, Some("keys.normal"), lhs, &rhs.as_deref().map(toml_str).unwrap_or_else(|| "false".into()));
     }
     let r = file.parent().map(std::fs::create_dir_all).unwrap_or(Ok(())).and_then(|_| std::fs::write(&file, &text));
     match r {

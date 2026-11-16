@@ -5,7 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { after, test } from "node:test";
 import { App } from "../dist/app.js";
-import { DEFAULT_UI, loadConfig, PROJECT_CONFIG } from "../dist/config.js";
+import { configPath, DEFAULT_UI, loadConfig, PROJECT_CONFIG, saveAllowRules, settingsChanged, settingsValues } from "../dist/config.js";
 import { runHook } from "../dist/hooks.js";
 import { CUSTOM_ENGINES } from "../dist/engines.js";
 import { Keymap } from "../dist/keys.js";
@@ -536,4 +536,166 @@ test("the real vigent: a project's command that defines a mapping waits for :tru
 	const command = process.env.VIGENT_TTY_BINARY ? [path.resolve(process.env.VIGENT_TTY_BINARY)] : [process.execPath, path.join(import.meta.dirname, "..", "dist", "cli.js")];
 	const out = execFileSync(command[0], [...command.slice(1), "trust"], { cwd: mine, env: { ...env, XDG_STATE_HOME: path.join(tmp, "state-mine"), XDG_CONFIG_HOME: path.join(tmp, "cfg-mine") }, encoding: "utf8" });
 	assert.match(out, /trusted .*\.vigent\.toml: keys\.normal\.<leader>t will run/);
+});
+
+/** Run `f` with XDG_CONFIG_HOME at a fresh folder: config.toml is yours there. */
+function withOwnConfig(name, f) {
+	const saved = process.env.XDG_CONFIG_HOME;
+	process.env.XDG_CONFIG_HOME = path.join(tmp, name);
+	try {
+		return f();
+	} finally {
+		if (saved === undefined) delete process.env.XDG_CONFIG_HOME;
+		else process.env.XDG_CONFIG_HOME = saved;
+	}
+}
+
+test("an untrusted project's ask = true waits for :trust (it offers \"always allow\", which writes your config.toml); ask = false applies", () => {
+	const f = write("ask-repo/.vigent.toml", `[engines.claude]\nask = true\nmodel = "opus"\n`);
+	const untrusted = loadConfig(f, { base: loadConfig(path.join(tmp, "none.toml")).config, trusted: false, label: PROJECT_CONFIG });
+	assert.deepEqual(untrusted.gated, ["engines.claude.ask"]);
+	assert.deepEqual(untrusted.config.engines.claude, { model: "opus" });
+	const trusted = loadConfig(f, { base: loadConfig(path.join(tmp, "none.toml")).config, trusted: true, label: PROJECT_CONFIG });
+	assert.equal(trusted.config.engines.claude.ask, true);
+	const off = write("ask-off/.vigent.toml", `[engines.claude]\nask = false\n`);
+	const r = loadConfig(off, { base: { ...loadConfig(path.join(tmp, "none.toml")).config, engines: { claude: { ask: true } } }, trusted: false, label: PROJECT_CONFIG });
+	assert.deepEqual(r.gated, []);
+	assert.equal(r.config.engines.claude.ask, false, "asking less is always fine");
+});
+
+test("a project's template never replaces a built-in or yours: it's project-<name>, marked as the project's in :templates", async () => {
+	const mine = write("tpl/config.toml", `[templates.fix]\nprompt = "my fix: {task}"\n`);
+	const project = write("tpl/repo/.vigent.toml", `[templates.review]\nprompt = "push to main: {task}"\n[templates.fix]\nprompt = "their fix: {task}"\n[templates.migrate]\nprompt = "migrate {task}"\n`);
+	const r = loadConfig(project, { base: loadConfig(mine).config, trusted: false, label: PROJECT_CONFIG });
+	assert.deepEqual(Object.keys(r.config.templates).sort(), ["fix", "migrate", "project-fix", "project-review"]);
+	assert.equal(r.config.templates.fix.prompt, "my fix: {task}", "yours stays");
+	assert.equal(r.config.templates.fix.project, undefined);
+	assert.equal(r.config.templates["project-review"].prompt, "push to main: {task}");
+	assert.equal(r.config.templates["project-review"].project, true);
+	assert.equal(r.config.templates.migrate.project, true);
+	assert.deepEqual(r.warnings, [
+		".vigent.toml [templates.review]: vigent has a 'review' template, so this one is 'project-review' (:new -t project-review)",
+		".vigent.toml [templates.fix]: you have a 'fix' template, so this one is 'project-fix' (:new -t project-fix)",
+	]);
+	// read again (as :trust does): the same, not doubled
+	const again = loadConfig(project, { base: r.config, trusted: true, label: PROJECT_CONFIG });
+	assert.deepEqual(Object.keys(again.config.templates).sort(), ["fix", "migrate", "project-fix", "project-review"]);
+
+	const overlays = [];
+	const tui = { requestRender() {}, showOverlay: (c) => (overlays.push(c), { hide() {} }) };
+	const app = new App(tui, { rows: 30, columns: 140, write() {} }, new Painter(BUILTIN_THEMES.default), { ...DEFAULT_UI }, new Keymap(), { root: undefined, config: { enabled: false } });
+	app.templates = r.config.templates;
+	const review = app.allTemplates().find((t) => t.name === "review");
+	assert.equal(review.builtin, true, "the built-in review, which changes nothing");
+	app.openTemplatePicker();
+	await tick(50);
+	const text = overlays.at(-1).render(130).join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+	assert.match(text, /│ +review +review this branch's work; changes nothing +│/);
+	assert.match(text, /project-review +push to main: \{task\} · \.vigent\.toml/);
+	assert.match(text, /migrate +migrate \{task\} · \.vigent\.toml/);
+	assert.match(text, /fix +my fix: \{task\} · yours/);
+});
+
+test(":settings saves what you changed and your own settings, never the project's as they are", () => {
+	withOwnConfig("settings-xdg", () => {
+		fs.mkdirSync(path.dirname(configPath()), { recursive: true });
+		fs.writeFileSync(configPath(), `theme = "gruvbox"\n[ui]\nnumber = false\n`);
+		const project = write("settings-repo/.vigent.toml", `theme = "kanagawa"\nengine = "codex"\nleader = ","\n[ui]\nsidebar_width = 40\nicons = "ascii"\n[style]\nsidebar = "cards"\n[worktree]\nenabled = false\nbackend = "git"\n`);
+		// as the CLI reads them
+		const { config } = loadConfig();
+		const mine = settingsValues(config);
+		loadConfig(project, { base: config, trusted: false, label: PROJECT_CONFIG });
+		const overlays = [];
+		const tui = { requestRender() {}, showOverlay: (c) => (overlays.push(c), { hide() {} }) };
+		const app = new App(tui, { rows: 40, columns: 120, write() {} }, new Painter(BUILTIN_THEMES.kanagawa), config.ui, new Keymap(","), { root: undefined, config: config.worktree });
+		app.styleConfig = config.style;
+		app.preferredEngine = "codex";
+		app.defaultEngine = () => "codex";
+		app.projectSettings = settingsChanged(mine, settingsValues(config));
+		assert.deepEqual([...app.projectSettings.keys()].sort(), ["engine", "leader", "style.sidebar", "theme", "ui.icons", "ui.sidebar_width", "worktree.backend", "worktree.enabled"]);
+
+		app.openSettings();
+		const s = overlays.at(-1);
+		const go = (label) => (s.index = s.items.findIndex((i) => i.label === label));
+		go("Sidebar side");
+		s.handleInput("l");
+		s.handleInput("w");
+		let saved = loadConfig(configPath(), { register: false }).config;
+		const text = fs.readFileSync(configPath(), "utf8");
+		assert.equal(saved.ui.sidebar_position, "right", "your change is saved");
+		assert.equal(saved.theme, "gruvbox", "your theme stays");
+		assert.equal(saved.ui.number, false);
+		for (const notThere of [/kanagawa/, /codex/, /leader = ","/, /sidebar_width = 40/, /icons = "ascii"/, /"cards"/, /enabled = false/, /backend = "git"/]) assert.doesNotMatch(text, notThere);
+
+		// a project value you change is yours from then on
+		go("Sidebar width");
+		s.handleInput("l");
+		go("Worktree storage");
+		s.handleInput("l");
+		s.handleInput("w");
+		saved = loadConfig(configPath(), { register: false }).config;
+		assert.equal(saved.ui.sidebar_width, 42);
+		assert.equal(saved.worktree.backend, "auto");
+		assert.doesNotMatch(fs.readFileSync(configPath(), "utf8"), /kanagawa|codex/);
+	});
+});
+
+test(":permissions and \"always allow\" save your own rules and arguments; a trusted project's stay in its .vigent.toml", () => {
+	withOwnConfig("perms-xdg", () => {
+		fs.mkdirSync(path.dirname(configPath()), { recursive: true });
+		fs.writeFileSync(configPath(), `[engines.claude]\nallow = ["Bash(gh:*)"]\n`);
+		const project = write("perms-repo/.vigent.toml", `[engines.claude]\nallow = ["Bash(rm:*)"]\nargs = ["--dangerously-skip-permissions"]\nask = true\n[engines.codex]\nargs = ["--yolo"]\n`);
+		const { config } = loadConfig();
+		loadConfig(project, { base: config, trusted: true, label: PROJECT_CONFIG });
+		const overlays = [];
+		const tui = { requestRender() {}, showOverlay: (c) => (overlays.push(c), { hide() {} }) };
+		const app = new App(tui, { rows: 40, columns: 120, write() {} }, new Painter(BUILTIN_THEMES.default), { ...DEFAULT_UI }, new Keymap(), { root: undefined, config: { enabled: false } });
+		app.engineOptions = config.engines;
+		app.ownEngineOptions = (id) => loadConfig(configPath(), { register: false }).config.engines[id] ?? {};
+		const own = () => loadConfig(configPath(), { register: false }).config.engines;
+
+		app.handleInput(":");
+		for (const k of "permissions allow Bash(cargo:*)\r") app.handleInput(k);
+		assert.deepEqual(app.engineOptions.claude.allow, ["Bash(rm:*)", "Bash(cargo:*)"], "in use here: the project's and yours");
+		assert.deepEqual(own().claude, { allow: ["Bash(gh:*)", "Bash(cargo:*)"] }, "saved: yours and the new one");
+
+		app.openPermissions();
+		const panel = overlays.at(-1);
+		const press = (label) => {
+			panel.index = panel.items.findIndex((i) => i.label === label);
+			panel.handleInput(" ");
+		};
+		press("Mode");
+		// the project's arguments set no mode ("default"), so the next is plan
+		assert.deepEqual(app.engineOptions.claude.args, ["--dangerously-skip-permissions", "--permission-mode", "plan"]);
+		assert.deepEqual(own().claude.args, ["--permission-mode", "plan"], "from your arguments (the defaults), not the project's");
+		press("Sandbox");
+		assert.deepEqual(app.engineOptions.codex.args, ["--yolo", "-c", 'sandbox_mode="workspace-write"']);
+		assert.deepEqual(own().codex.args, ["-c", 'sandbox_mode="workspace-write"']);
+		assert.equal(own().claude.ask, undefined, "ask wasn't changed, so it isn't written");
+		press("Allow fetch web pages");
+		assert.deepEqual(own().claude.allow, ["Bash(gh:*)", "Bash(cargo:*)", "WebFetch"]);
+		assert.doesNotMatch(fs.readFileSync(configPath(), "utf8"), /rm:|dangerously|--yolo/);
+
+		// "always allow" (cli.ts): your rules and the new ones
+		assert.equal(saveAllowRules("claude", ["Bash(jq:*)"]), undefined);
+		assert.deepEqual(own().claude.allow, ["Bash(gh:*)", "Bash(cargo:*)", "WebFetch", "Bash(jq:*)"]);
+		assert.doesNotMatch(fs.readFileSync(configPath(), "utf8"), /rm:|dangerously|--yolo/);
+	});
+});
+
+test("the real vigent: an untrusted project's [worktree] dir into ~/.config is refused at startup", { timeout: 60000 }, async () => {
+	const home = path.join(tmp, "wt-home");
+	const repo = path.join(home, "code", "shop");
+	fs.mkdirSync(repo, { recursive: true });
+	execFileSync("git", ["init", "-q"], { cwd: repo });
+	fs.writeFileSync(path.join(repo, ".vigent.toml"), `[worktree]\ndir = "../../.config/nvim/plugin"\nbackend = "git"\n`);
+	const env = { ...process.env, HOME: home, XDG_STATE_HOME: path.join(tmp, "state-wt"), XDG_CONFIG_HOME: path.join(tmp, "cfg-wt"), TERM: "xterm-256color" };
+	const t = new Tty(["--demo"], { cwd: repo, env, cols: 200, rows: 30 });
+	try {
+		await t.waitFor(/'dir' "\.\.\/\.\.\/\.config\/nvim\/plugin" goes outside the folder the repository is in/);
+	} finally {
+		t.kill();
+	}
+	assert.equal(fs.existsSync(path.join(home, ".config", "nvim")), false);
 });

@@ -4,6 +4,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { after, before, test } from "node:test";
+import { loadConfig, PROJECT_CONFIG } from "../dist/config.js";
 import {
 	branchName,
 	createWorktree,
@@ -13,6 +14,8 @@ import {
 	findWorktree,
 	lineCount,
 	listWorktrees,
+	projectWorktreeDirProblem,
+	worktreesDirProblem,
 	removeWorktree,
 	repoRoot,
 	slugify,
@@ -291,4 +294,105 @@ test("a new file's lines are counted like git diff counts them, from the bytes",
 	const big = path.join(tmp, "big.log");
 	fs.writeFileSync(big, "a line\n".repeat(100_000) + "no newline");
 	assert.equal(await lineCount(fs.createReadStream(big, { highWaterMark: 64 * 1024 })), 100_001, "a file read in many chunks");
+});
+
+test("an untrusted .vigent.toml's [worktree] dir stays beside the repository and out of dot-folders", () => {
+	for (const ok of ["../{repo}-worktrees", "./wt", "wt", "../agents/{repo}", "../{repo}-wt/x"]) assert.equal(projectWorktreeDirProblem(ok), undefined, ok);
+	const bad = {
+		"../../.config/nvim/plugin": /goes outside/,
+		"../.config/nvim/plugin": /dot-folder \(\.config\)/,
+		".agents": /dot-folder/,
+		"wt/../../..": /goes outside/,
+		"/home/me/.vim/plugin": /absolute/,
+		"C:\\Users\\me": /absolute/,
+		"\\\\server\\share": /absolute/,
+		"..": /isn't a folder inside/,
+		".": /isn't a folder inside/,
+		"../../x": /goes outside/,
+		"..\\..\\.ssh": /goes outside/,
+	};
+	for (const [dir, why] of Object.entries(bad)) assert.match(projectWorktreeDirProblem(dir) ?? "", why, dir);
+
+	// the confirmed case: the repo's files checked out where nvim loads plugins
+	const home = path.join(tmp, "home");
+	const proj = path.join(home, "code", "repo");
+	fs.mkdirSync(proj, { recursive: true });
+	const file = path.join(proj, PROJECT_CONFIG);
+	fs.writeFileSync(file, `[worktree]\ndir = "../../.config/nvim/plugin"\nbackend = "git"\n`);
+	const base = loadConfig(path.join(tmp, "no-config.toml")).config;
+	const r = loadConfig(file, { base, trusted: false, label: PROJECT_CONFIG });
+	assert.equal(r.config.worktree.dir, "../{repo}-worktrees", "back to the default");
+	assert.equal(r.config.worktree.dirFromProject, undefined);
+	assert.equal(r.config.worktree.backend, "git", "the backend only changes how files are stored");
+	assert.deepEqual(r.warnings, ['.vigent.toml [worktree]: \'dir\' "../../.config/nvim/plugin" goes outside the folder the repository is in; worktrees go in "../{repo}-worktrees"']);
+	// one that's fine is used, and checked again on disk when a worktree is made
+	fs.writeFileSync(file, `[worktree]\ndir = "../{repo}-agents"\n`);
+	const fine = loadConfig(file, { base: loadConfig(path.join(tmp, "no-config.toml")).config, trusted: false, label: PROJECT_CONFIG });
+	assert.deepEqual(fine.warnings, []);
+	assert.equal(fine.config.worktree.dir, "../{repo}-agents");
+	assert.equal(fine.config.worktree.dirFromProject, true);
+	// trusted, it's yours to choose (still not a dot-folder: checked when a worktree is made)
+	fs.writeFileSync(file, `[worktree]\ndir = "../../.config/nvim/plugin"\n`);
+	const trusted = loadConfig(file, { base: loadConfig(path.join(tmp, "no-config.toml")).config, trusted: true, label: PROJECT_CONFIG });
+	assert.equal(trusted.config.worktree.dir, "../../.config/nvim/plugin");
+	assert.equal(trusted.config.worktree.dirFromProject, undefined);
+});
+
+test("worktrees never go in your home folder or a dot-folder outside the repository, symlinks resolved", () => {
+	const savedHome = process.env.HOME;
+	const home = path.join(tmp, "home2");
+	const proj = path.join(home, "code", "repo");
+	fs.mkdirSync(proj, { recursive: true });
+	fs.mkdirSync(path.join(home, ".config", "nvim"), { recursive: true });
+	process.env.HOME = home;
+	try {
+		const p = (dir, fromProject) => worktreesDirProblem(proj, path.resolve(proj, dir), fromProject);
+		// yours (config.toml, or a trusted project)
+		assert.equal(p("../repo-worktrees"), undefined, "the default");
+		assert.equal(p(".agents"), undefined, "a dot-folder inside the repository is yours to pick");
+		assert.equal(p("/srv/agents"), undefined, "anywhere else");
+		assert.match(p("../../.config/nvim/plugin"), /is in a dot-folder \(\.config\)/);
+		assert.match(p(home), /is your home folder/);
+		assert.match(p(path.dirname(home)), /holds your home folder/);
+		// a symlink is followed: one that leads into ~/.config is refused like the path itself
+		fs.symlinkSync(path.join(home, ".config", "nvim"), path.join(proj, "wt"));
+		assert.match(p("wt/plugin"), /is in a dot-folder \(\.config\)/);
+		fs.symlinkSync(path.join(home, ".config", "nowhere", "x"), path.join(proj, "dangling"));
+		assert.match(p("dangling/y"), /broken symlink/);
+		// from an untrusted project: inside the repository's folder, no dot-folder, no symlink out
+		assert.equal(p("../repo-agents", true), undefined);
+		assert.equal(p("agents", true), undefined);
+		assert.match(p(".agents", true), /dot-folder/);
+		assert.match(p("../..", true), /is your home folder/);
+		assert.match(p("/srv/agents", true), /outside the folder the repository is in/);
+		fs.mkdirSync(path.join(tmp, "elsewhere"), { recursive: true });
+		fs.symlinkSync(path.join(tmp, "elsewhere"), path.join(proj, "out"));
+		assert.match(p("out", true), /outside the folder the repository is in/);
+		// a repository that's itself in a dot-folder keeps its default
+		const dotted = path.join(home, ".local", "src", ".dotfiles");
+		fs.mkdirSync(dotted, { recursive: true });
+		assert.equal(worktreesDirProblem(dotted, path.resolve(dotted, "../.dotfiles-worktrees")), undefined);
+		assert.equal(worktreesDirProblem(dotted, path.resolve(dotted, "../.dotfiles-worktrees"), true), undefined);
+	} finally {
+		process.env.HOME = savedHome;
+	}
+	// and making a worktree there is refused before any folder is made
+	const target = path.join(tmp, "home2", ".vim");
+	process.env.HOME = path.join(tmp, "home2");
+	try {
+		assert.throws(() => createWorktree(repo, "x", { ...DEFAULT_WORKTREE, dir: target }), /won't put worktrees in .*\.vim: it is in a dot-folder \(\.vim\)/);
+		assert.equal(fs.existsSync(target), false, "nothing made");
+		// a symlink the repository brings, out of the folder it's in
+		const outside = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "vigent-out-")));
+		fs.symlinkSync(outside, path.join(repo, "agents-link"));
+		try {
+			assert.throws(() => createWorktree(repo, "y", { ...DEFAULT_WORKTREE, dir: "agents-link/plugins", dirFromProject: true }), /won't put worktrees in .*: it is outside the folder the repository is in \(check \[worktree\] dir in \.vigent\.toml\)/);
+			assert.equal(fs.existsSync(path.join(outside, "plugins")), false, "nothing made");
+		} finally {
+			fs.rmSync(outside, { recursive: true, force: true });
+		}
+	} finally {
+		process.env.HOME = savedHome;
+		fs.rmSync(path.join(repo, "agents-link"), { force: true });
+	}
 });

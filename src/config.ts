@@ -16,11 +16,12 @@
  *   VigentSidebar = { link = "NormalFloat" }
  */
 import { NOTIFY_MODES, type NotifyMode } from "./notify.js";
+import { setTomlValue, tomlValue } from "./config-edit.js";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { parse as parseToml } from "smol-toml";
 import { EFFORTS } from "./choices.js";
-import { parseTemplates, type Template } from "./templates.js";
+import { BUILTIN_TEMPLATES, parseTemplates, type Template } from "./templates.js";
 import { type CommandInfos, commandSteps, normalizeStep, parseCommands, runsShell, type UserCommands } from "./commands.js";
 import { HOOK_NAMES, type HookName, type Hooks } from "./hooks.js";
 import { defaultLayout, type Layout, parseSections, STATUSLINE_PARTS, WINBAR_PARTS } from "./layout.js";
@@ -30,7 +31,7 @@ import { CUSTOM_ENGINES, type CustomEngine, ENGINE_IDS, type EngineId, isEngineI
 import { WORKTREE_BACKENDS, type WorktreeBackend } from "./riftri.js";
 import { commandLineRisk, type CommandSteps, KEY_MODES, type KeyMode, leaderOrDefault, mappingRisks } from "./keys.js";
 import { type Attr, configDir, normalizeGroups } from "./theme.js";
-import { DEFAULT_WORKTREE, type WorktreeConfig } from "./worktree.js";
+import { DEFAULT_WORKTREE, projectWorktreeDirProblem, type WorktreeConfig } from "./worktree.js";
 
 export interface UiOptions {
 	sidebar: boolean;
@@ -104,6 +105,8 @@ export interface LoadOptions {
 	trusted?: boolean;
 	/** how warnings name the file ("config" or ".vigent.toml") */
 	label?: string;
+	/** false: only read it; [engines] with a command aren't made available (default true) */
+	register?: boolean;
 }
 
 /** The project's own config, at the repository root. */
@@ -136,6 +139,7 @@ export function loadConfig(file = configPath(), opts: LoadOptions = {}): { confi
 	const gated: string[] = [];
 	const where = opts.label ?? "config";
 	const mayRun = opts.trusted !== false;
+	const register = opts.register !== false;
 	/** [keys] mappings, applied once the whole file is read */
 	const keys: [KeyMode, string, unknown][] = [];
 	if (!fs.existsSync(file)) return { config, warnings, gated };
@@ -180,7 +184,7 @@ export function loadConfig(file = configPath(), opts: LoadOptions = {}): { confi
 							continue;
 						}
 						const custom = parseCustomEngine(id, opts as Record<string, unknown>, `${where} [engines.${id}]`, warnings);
-						if (custom) registerCustomEngine(custom);
+						if (custom && register) registerCustomEngine(custom);
 						continue;
 					}
 					if (!isEngineId(id)) {
@@ -194,7 +198,8 @@ export function loadConfig(file = configPath(), opts: LoadOptions = {}): { confi
 					}
 					const e: EngineOptions = {};
 					for (const [k, v] of Object.entries(opts)) {
-						if ((k === "args" || k === "allow") && !mayRun) {
+						// ask = true offers "always allow", which writes rules into your config.toml
+						if ((k === "args" || k === "allow" || (k === "ask" && v === true && id === "claude")) && !mayRun) {
 							gated.push(`engines.${id}.${k}`);
 							continue;
 						}
@@ -212,9 +217,32 @@ export function loadConfig(file = configPath(), opts: LoadOptions = {}): { confi
 					config.engines[id as EngineId] = { ...config.engines[id as EngineId], ...e };
 				}
 				break;
-			case "templates":
-				config.templates = { ...config.templates, ...parseTemplates(value, warnings) };
+			case "templates": {
+				const own = parseTemplates(value, warnings);
+				// a project's template never stands in for a built-in or one of yours: :new -t review
+				// stays the review that changes nothing, and the project's is project-review
+				if (where === PROJECT_CONFIG) {
+					for (const [name, t] of Object.entries(own)) {
+						delete own[name];
+						t.project = true;
+						const mine = config.templates[name];
+						if (!BUILTIN_TEMPLATES.some((b) => b.name === name) && !(mine && !mine.project)) {
+							own[name] = t;
+							continue;
+						}
+						const renamed = `project-${name}`;
+						const taken = config.templates[renamed];
+						if (taken && !taken.project) {
+							warnings.push(`${where} [templates.${name}]: left out: you have templates named '${name}' and '${renamed}'`);
+							continue;
+						}
+						own[renamed] = { ...t, name: renamed };
+						warnings.push(`${where} [templates.${name}]: ${mine && !mine.project ? "you have" : "vigent has"} a '${name}' template, so this one is '${renamed}' (:new -t ${renamed})`);
+					}
+				}
+				config.templates = { ...config.templates, ...own };
 				break;
+			}
 			case "style": {
 				const own = parseStyle(value, where, warnings);
 				config.style = {
@@ -292,8 +320,18 @@ export function loadConfig(file = configPath(), opts: LoadOptions = {}): { confi
 					break;
 				}
 				for (const [opt, v] of Object.entries(value)) {
+					// an untrusted project's dir stays beside the repository, out of dot-folders
+					const why = opt === "dir" && !mayRun && typeof v === "string" && v.trim() ? projectWorktreeDirProblem(v) : undefined;
+					if (why) {
+						warnings.push(`${where} [worktree]: 'dir' ${JSON.stringify(v)} ${why}; worktrees go in ${JSON.stringify(config.worktree.dir)}`);
+						continue;
+					}
 					const msg = setWorktreeOption(config.worktree, opt, v);
 					if (msg) warnings.push(`${where} [worktree]: ${msg}`);
+					else if (opt === "dir") {
+						if (mayRun) delete config.worktree.dirFromProject;
+						else config.worktree.dirFromProject = true;
+					}
 				}
 				break;
 			default:
@@ -313,6 +351,44 @@ export function loadConfig(file = configPath(), opts: LoadOptions = {}): { confi
 		config.keys[mode] = { ...config.keys[mode], [lhs]: rhs };
 	}
 	return { config, warnings, gated };
+}
+
+/** What :settings saves: each value as TOML, by "section.key" ("theme", "ui.sidebar", ...). */
+export function settingsValues(v: { theme?: string; engine?: string; leader?: string; ui: UiOptions; style: StyleSpec; worktree: WorktreeConfig }): Map<string, string> {
+	const out = new Map<string, string>();
+	if (v.theme !== undefined) out.set("theme", tomlValue(v.theme));
+	out.set("engine", tomlValue(v.engine ?? "auto"));
+	out.set("leader", tomlValue(leaderOrDefault(v.leader)));
+	for (const k of ["sidebar", "sidebar_width", "sidebar_position", "number", "tilde", "icons", "termguicolors", "transparent", "whichkey", "notify"] as const) out.set(`ui.${k}`, tomlValue(v.ui[k]));
+	for (const k of ["sidebar", "messages", "separators"] as const) {
+		const s = v.style[k];
+		if (s) out.set(`style.${k}`, tomlValue(s));
+	}
+	out.set("worktree.enabled", tomlValue(v.worktree.enabled));
+	out.set("worktree.backend", tomlValue(v.worktree.backend ?? "auto"));
+	return out;
+}
+
+/** The settings `after` has that `before` didn't: what a project's .vigent.toml set over your config.toml. */
+export function settingsChanged(before: Map<string, string>, after: Map<string, string>): Map<string, string> {
+	return new Map([...after].filter(([name, value]) => before.get(name) !== value));
+}
+
+/**
+ * "always allow": add rules to [engines.<id>] allow in your config.toml, after the rules it
+ * has (never a project's). Returns why it couldn't save.
+ */
+export function saveAllowRules(engine: EngineId, rules: string[], file = configPath()): string | undefined {
+	const own = [...new Set([...(loadConfig(file, { register: false }).config.engines[engine]?.allow ?? []), ...rules])];
+	try {
+		const text = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : CONFIG_TEMPLATE;
+		const list = `[${own.map((r) => JSON.stringify(r)).join(", ")}]`;
+		fs.mkdirSync(path.dirname(file), { recursive: true });
+		fs.writeFileSync(file, setTomlValue(text, `engines.${engine}`, "allow", list));
+		return undefined;
+	} catch (err) {
+		return `allowed for now, but couldn't save to ${file}: ${(err as Error).message}`;
+	}
 }
 
 const OUTPUTS = ["text", "claude", "codex", "opencode", "gemini", "cursor"] as const;

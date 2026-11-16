@@ -11,7 +11,7 @@ import { FOCUS_REPORTING_OFF, FOCUS_REPORTING_ON } from "./notify.js";
 import { staleBuild, VERSION_TEXT } from "./version.js";
 import { CliSession } from "./cli-engines.js";
 import { CUSTOM_ENGINES, defaultEngine, detectEngines, ENGINE_BINS, ENGINE_NAMES, type EngineId, isEngineId, onPath, piConnected, quickEngines, engineEnv } from "./engines.js";
-import { CONFIG_TEMPLATE, configPath, loadConfig, PROJECT_CONFIG } from "./config.js";
+import { CONFIG_TEMPLATE, configPath, loadConfig, PROJECT_CONFIG, saveAllowRules, settingsChanged, settingsValues } from "./config.js";
 import { executeProjectTrust, isTrusted, trustFile } from "./trust.js";
 import { setTomlValue } from "./config-edit.js";
 import { createDemoSessions } from "./demo.js";
@@ -293,6 +293,8 @@ async function main(): Promise<number | undefined> {
 	// the project's own .vigent.toml, over yours; what runs programs waits for :trust
 	const root = repoRoot(process.cwd());
 	const projectFile = root ? path.join(root, PROJECT_CONFIG) : undefined;
+	/** what :settings would save from your config.toml alone, to tell what the project changed */
+	const mySettings = settingsValues(config);
 	if (projectFile && fs.existsSync(projectFile)) {
 		const content = fs.readFileSync(projectFile, "utf8");
 		const project = loadConfig(projectFile, { base: config, trusted: isTrusted(projectFile, content), label: PROJECT_CONFIG });
@@ -334,6 +336,9 @@ async function main(): Promise<number | undefined> {
 		root,
 		config: config.worktree,
 	});
+	// what the project set over yours: :settings saves those only once you change them
+	app.projectSettings = settingsChanged(mySettings, settingsValues(config));
+	if (app.projectSettings.has("theme") && !flag(argv, "--theme")) app.projectSettings.set("theme", JSON.stringify(theme.name));
 	// can agent worktrees be copy-on-write here? (riftri; runs in the background)
 	app.checkStorage = () => riftriHealth(root, root ? worktreesDir(root, config.worktree) : undefined, config.worktree.backend);
 	if (!demo && root && config.worktree.enabled) {
@@ -373,22 +378,19 @@ async function main(): Promise<number | undefined> {
 		}
 	};
 	app.reloadPermissions = savedPermissions;
+	// what :permissions saves starts from your config.toml alone: a trusted project's args and
+	// allow rules apply while you're in it, but stay in its .vigent.toml
+	app.ownEngineOptions = (id) => loadConfig(configPath(), { register: false }).config.engines[id] ?? {};
 
-	/** "always allow": add the rules to [engines.<id>] allow, here and in config.toml. Returns why it couldn't save. */
+	/**
+	 * "always allow": add the rules to [engines.<id>] allow, here and in config.toml (your own
+	 * rules and these; a project's stay in its .vigent.toml). Returns why it couldn't save.
+	 */
 	const alwaysAllow = (engine: Exclude<EngineId, "pi">, rules: string[]): string | undefined => {
 		savedPermissions();
 		const e = (config.engines[engine] ??= {});
 		e.allow = [...new Set([...(e.allow ?? []), ...rules])];
-		const file = configPath();
-		try {
-			const text = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : CONFIG_TEMPLATE;
-			const list = `[${e.allow.map((r) => JSON.stringify(r)).join(", ")}]`;
-			fs.mkdirSync(path.dirname(file), { recursive: true });
-			fs.writeFileSync(file, setTomlValue(text, `engines.${engine}`, "allow", list));
-			return undefined;
-		} catch (err) {
-			return `allowed for now, but couldn't save to ${file}: ${(err as Error).message}`;
-		}
+		return saveAllowRules(engine, rules);
 	};
 
 	/** A pi agent: your pi in RPC mode; its conversation is kept in the worktree's session folder. */
