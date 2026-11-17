@@ -21,7 +21,17 @@ use crate::app::App;
 use crate::config::{self, Config, LoadOptions, PROJECT_CONFIG};
 use crate::keys::{KEY_MODES, KeyMode, Keymap, RhsValue};
 
+#[cfg(test)]
+thread_local! {
+    /// a test's own trust store (tests run in parallel, so not $XDG_STATE_HOME)
+    static TEST_STORE: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
 fn state_file() -> PathBuf {
+    #[cfg(test)]
+    if let Some(f) = TEST_STORE.with(|s| s.borrow().clone()) {
+        return f;
+    }
     let base = std::env::var_os("XDG_STATE_HOME")
         .filter(|x| !x.is_empty())
         .map(PathBuf::from)
@@ -423,6 +433,164 @@ mod tests {
         crate::commands::exec(&mut app, "delcommand Test");
         crate::commands::exec(&mut app, "command! Hi !echo hi");
         assert_eq!(waiting(project, in_use(&app)), ["keys.normal.<leader>h"]);
+    }
+
+    /// A temp folder of its own, with this test's own trust store; git-initialized, with `files`.
+    fn repo_with(name: &str, files: &[&str]) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("vigent-trust-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for f in files {
+            let p = dir.join(f);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, "{}").unwrap();
+        }
+        TEST_STORE.with(|s| *s.borrow_mut() = Some(dir.join("state").join("trusted.json")));
+        dir
+    }
+
+    #[test]
+    fn the_message_names_the_agent_configs_the_repository_has() {
+        let dir = repo_with("configs", &[".claude/settings.json", ".pi/extensions/x.ts", "opencode.json", ".codex/config.toml"]);
+        assert_eq!(agent_configs(&dir), [".claude/", ".pi/", "opencode.json", ".codex/"]);
+        let w = Workspace { dir: dir.clone(), repo: true, trusted: false };
+        assert_eq!(untrusted_message(&w), "this repository isn't trusted yet: its agent CLIs would load its own settings (.claude/, .pi/, opencode.json, .codex/). :trust to allow it");
+        let bare = repo_with("bare", &[]);
+        assert_eq!(untrusted_message(&Workspace { dir: bare.clone(), repo: true, trusted: false }), "this repository isn't trusted yet: its agent CLIs would load its own settings (.claude/, .pi/, …). :trust to allow it");
+        assert_eq!(untrusted_message(&Workspace { dir: bare.clone(), repo: false, trusted: false }), "this folder isn't trusted yet: its agent CLIs would load its own settings (.claude/, .pi/, …). :trust to allow it");
+        assert_eq!(untrusted_note(&w), "this repository isn't trusted yet: :trust lets its agent CLIs run here");
+        // a file named like a folder doesn't count, nor a folder named like a file
+        let odd = repo_with("odd", &["opencode.json/x"]);
+        std::fs::write(odd.join(".claude"), "").unwrap();
+        assert!(agent_configs(&odd).is_empty());
+        for d in [dir, bare, odd] {
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
+
+    #[test]
+    fn a_repositorys_trust_is_its_path_in_the_same_store() {
+        let dir = repo_with("store", &[]);
+        assert!(!is_repo_trusted(&dir));
+        assert!(trust_repo(&dir).unwrap());
+        assert!(!trust_repo(&dir).unwrap(), "already trusted");
+        assert!(is_repo_trusted(&dir));
+        let store: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir.join("state").join("trusted.json")).unwrap()).unwrap();
+        assert_eq!(store[dir.to_string_lossy().as_ref()], "repository");
+        trust_file(&dir.join(PROJECT_CONFIG), "x").unwrap();
+        assert_eq!(trusted_entries(), [(dir.to_string_lossy().to_string(), true), (dir.join(PROJECT_CONFIG).to_string_lossy().to_string(), false)]);
+        assert!(revoke_repo(&dir).unwrap());
+        assert!(!is_repo_trusted(&dir) && !is_trusted(&dir.join(PROJECT_CONFIG), "x"), "the repository and its .vigent.toml");
+        assert!(!revoke_repo(&dir).unwrap());
+        assert!(is_repo_trusted(&home()), "your home folder is never a repository to trust");
+        assert_eq!(workspace_at(&dir.join("sub"), None), Workspace { dir: dir.join("sub"), repo: false, trusted: false }, "outside a repository, the folder itself");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// An App in `dir`, a repository that isn't trusted.
+    fn untrusted_app(dir: &Path) -> App {
+        let mut app = crate::app::tests::app();
+        app.cwd = dir.to_path_buf();
+        app.root = Some(dir.to_path_buf());
+        app.config.worktree.enabled = false;
+        app.agents.workspace = Some(workspace_at(dir, Some(dir)));
+        app
+    }
+
+    #[test]
+    fn untrusted_starting_an_agent_runs_nothing_and_says_why_then_trust_lets_it() {
+        let dir = repo_with("start", &[".claude/settings.json"]);
+        let mut app = untrusted_app(&dir);
+        let expected = "this repository isn't trusted yet: its agent CLIs would load its own settings (.claude/). :trust to allow it";
+        assert!(app.start_agent("fix it", Default::default()).is_none());
+        assert_eq!(app.message, (expected.to_string(), "ErrorMsg"));
+        app.input = "fix the bug".into();
+        app.submit();
+        crate::commands::exec(&mut app, "new other task");
+        crate::commands::exec(&mut app, "race the task");
+        assert_eq!(app.message.0, expected);
+        assert!(app.sessions.is_empty());
+        assert_eq!(crate::engines::select::launch(&app, "claude").blocked.as_deref(), Some(expected));
+        crate::commands::exec(&mut app, "trust");
+        assert_eq!(app.message.0, "trusted this repository");
+        assert_eq!(app.untrusted(), None);
+        assert_eq!(crate::engines::select::launch(&app, "claude").blocked, None);
+        assert!(app.start_agent("fix it", Default::default()).is_some());
+        crate::commands::exec(&mut app, "trust");
+        assert_eq!(app.message.0, "this repository is trusted", ":trust with nothing left to trust says so");
+        // demo mode never waits
+        let mut demo = untrusted_app(&repo_with("demo", &[]));
+        demo.serve.demo = true;
+        assert_eq!(demo.untrusted(), None);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_reopened_agent_waits_for_trust_and_its_cli_never_runs_before() {
+        let dir = repo_with("restore", &[".pi/extensions/x.ts"]);
+        let mut app = untrusted_app(&dir);
+        let marker = dir.join("ran");
+        let bin = dir.join("fake-claude");
+        std::fs::write(&bin, format!("#!/bin/sh
+pwd >> {}
+", marker.display())).unwrap();
+        std::process::Command::new("chmod").arg("755").arg(&bin).status().unwrap();
+        let i = app.add_session(crate::session::Session::new(0, "from last time", "claude", dir.clone()), true);
+        assert!(app.hold_until_trusted(i));
+        assert_eq!(app.sessions[i].hold_reason.as_deref(), Some(TRUST_HOLD));
+        app.input = "carry on".into();
+        app.submit();
+        assert_eq!(app.message.0, "this repository isn't trusted yet: its agent CLIs would load its own settings (.pi/). :trust to allow it");
+        assert_eq!(app.sessions[i].queue, ["carry on"], "the prompt waits");
+        // a turn sent straight to the session runs nothing either
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut launch = crate::engines::select::launch(&app, "claude");
+        launch.bin = bin.to_string_lossy().into_owned();
+        app.sessions[i].run("sneaked in".into(), &launch, tx.clone());
+        assert!(app.sessions[i].child.is_none());
+        assert!(matches!(app.sessions[i].items.last(), Some(crate::session::Item::Error(e)) if e.starts_with("error: this repository isn't trusted yet")));
+        // nor pi
+        let p = app.add_session(crate::session::Session::new(0, "pi agent", "pi", dir.clone()), false);
+        crate::engines::pi::warm(&mut app, p);
+        assert!(app.sessions[p].pi.is_none());
+        assert!(!marker.exists(), "the agent CLI never ran");
+        // trusted: the hold goes (the queued prompt is sent), and a turn runs
+        app.sessions[i].queue.clear();
+        crate::commands::exec(&mut app, "trust");
+        assert_eq!(app.message.0, "trusted this repository");
+        assert_eq!(app.sessions[i].hold_reason, None);
+        let mut launch = crate::engines::select::launch(&app, "claude");
+        launch.bin = bin.to_string_lossy().into_owned();
+        app.sessions[i].state = crate::session::State::Idle;
+        app.sessions[i].run("go".into(), &launch, tx);
+        let _ = app.sessions[i].child.take().expect("it runs now").wait();
+        assert_eq!(std::fs::read_to_string(&marker).unwrap().trim(), dir.to_string_lossy());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn model_lists_run_outside_a_repository_you_havent_trusted() {
+        let dir = repo_with("models", &[".pi/extensions/x.ts"]);
+        let log = dir.join("pi-cwd");
+        let bin = dir.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("pi"), format!("#!/bin/sh
+pwd > {}
+echo 'provider  model' >&2
+echo 'anthropic  claude-x' >&2
+", log.display())).unwrap();
+        std::process::Command::new("chmod").arg("755").arg(bin.join("pi")).status().unwrap();
+        let neutral = dir.join("neutral");
+        std::fs::create_dir_all(&neutral).unwrap();
+        let env: crate::engines::detect::Env = [("PATH".to_string(), format!("{}:/usr/bin:/bin", bin.display()))].into_iter().collect();
+        // the probe folder is the process's: only this test sets it, and puts it back
+        crate::engines::detect::set_probe_dir(Some(neutral.clone()));
+        let models = crate::engines::choices::pi_models(&env);
+        let ran_in = std::fs::read_to_string(&log).unwrap_or_default();
+        crate::engines::detect::set_probe_dir(None);
+        assert_eq!(models, [("anthropic".to_string(), "claude-x".to_string())]);
+        assert_eq!(ran_in.trim(), neutral.to_string_lossy());
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

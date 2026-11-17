@@ -218,6 +218,9 @@ impl App {
         if arg == "pick" {
             return self.pick_racer(false);
         }
+        if let Some(why) = self.untrusted() {
+            return self.say(why, "ErrorMsg");
+        }
         let parsed = parse_race_args(arg);
         if let Some(e) = parsed.error {
             return self.say(e, "ErrorMsg");
