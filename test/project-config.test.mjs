@@ -699,3 +699,39 @@ test("the real vigent: an untrusted project's [worktree] dir into ~/.config is r
 	}
 	assert.equal(fs.existsSync(path.join(home, ".config", "nvim")), false);
 });
+
+test("the real vigent: w in :settings and :permissions allow keep a project's values out of your config.toml", { timeout: 60000 }, async () => {
+	const repo = path.join(tmp, "leak-repo");
+	fs.mkdirSync(repo, { recursive: true });
+	execFileSync("git", ["init", "-q"], { cwd: repo });
+	const project = path.join(repo, ".vigent.toml");
+	const content = `theme = "kanagawa"\n[ui]\nsidebar_width = 40\n[engines.claude]\nallow = ["Bash(rm:*)"]\nargs = ["--dangerously-skip-permissions"]\n`;
+	fs.writeFileSync(project, content);
+	const xdg = path.join(tmp, "leak-cfg");
+	const own = path.join(xdg, "vigent", "config.toml");
+	fs.mkdirSync(path.dirname(own), { recursive: true });
+	fs.writeFileSync(own, `theme = "gruvbox"\n[engines.claude]\nallow = ["Bash(gh:*)"]\n`);
+	// trusted, so its allow rules and args are in use
+	const state = path.join(tmp, "leak-state");
+	fs.mkdirSync(path.join(state, "vigent"), { recursive: true });
+	const digest = (await import("node:crypto")).createHash("sha256").update(content).digest("hex");
+	fs.writeFileSync(path.join(state, "vigent", "trusted.json"), JSON.stringify({ [project]: digest }));
+	const env = { ...process.env, XDG_STATE_HOME: state, XDG_CONFIG_HOME: xdg, TERM: "xterm-256color" };
+	const t = new Tty(["--demo"], { cwd: repo, env, cols: 140, rows: 40 });
+	try {
+		await t.waitFor(/NORMAL/);
+		await t.type(":permissions allow Bash(cargo:*)\r");
+		await t.waitFor(/allowed Bash\(cargo:\*\) for Claude Code/);
+		await t.type(":settings\r");
+		await t.waitFor(/w save to config\.toml/);
+		await t.type("w");
+		await t.waitFor(/saved to .*config\.toml/);
+	} finally {
+		t.kill();
+	}
+	const text = fs.readFileSync(own, "utf8");
+	const saved = loadConfig(own, { register: false }).config;
+	assert.deepEqual(saved.engines.claude.allow, ["Bash(gh:*)", "Bash(cargo:*)"], "yours and the new rule");
+	assert.equal(saved.theme, "gruvbox");
+	assert.doesNotMatch(text, /rm:|dangerously|kanagawa|sidebar_width = 40/);
+});
