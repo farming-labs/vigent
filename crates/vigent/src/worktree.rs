@@ -123,9 +123,13 @@ fn home_dir() -> Option<PathBuf> {
 /// stay inside the folder the repository is in, with no dot-folder at all (src/worktree.ts
 /// worktreesDirProblem).
 pub fn worktrees_dir_problem(root: &Path, dir: &Path, from_project: bool) -> Option<String> {
+    dir_problem(root, dir, from_project, home_dir())
+}
+
+fn dir_problem(root: &Path, dir: &Path, from_project: bool, home: Option<PathBuf>) -> Option<String> {
     let repo = resolve_existing(root).unwrap_or_else(|| root.to_path_buf());
     let Some(target) = resolve_existing(dir) else { return Some("goes through a broken symlink".into()) };
-    if let Some(home) = home_dir() {
+    if let Some(home) = home {
         let home = resolve_existing(&home).unwrap_or(home);
         if home.parent().is_some() && home.starts_with(&target) {
             return Some(if target == home { "is your home folder" } else { "holds your home folder" }.into());
@@ -666,5 +670,75 @@ mod tests {
         assert_eq!(worktrees_dir(Path::new("/w/shop"), &cfg), PathBuf::from("/w/shop-worktrees"));
         let inside = WorktreeConfig { dir: ".worktrees".into(), ..WorktreeConfig::default() };
         assert_eq!(worktrees_dir(Path::new("/w/shop"), &inside), PathBuf::from("/w/shop/.worktrees"));
+    }
+
+    #[test]
+    fn an_untrusted_projects_dir_stays_beside_the_repository_and_out_of_dot_folders() {
+        for ok in ["../{repo}-worktrees", "./wt", "wt", "../agents/{repo}", "../{repo}-wt/x"] {
+            assert_eq!(project_worktree_dir_problem(ok), None, "{ok}");
+        }
+        let bad = [
+            ("../../.config/nvim/plugin", "goes outside"),
+            ("../.config/nvim/plugin", "dot-folder (.config)"),
+            (".agents", "dot-folder"),
+            ("wt/../../..", "goes outside"),
+            ("/home/me/.vim/plugin", "absolute"),
+            ("C:\\Users\\me", "absolute"),
+            ("\\\\server\\share", "absolute"),
+            ("..", "isn't a folder inside"),
+            (".", "isn't a folder inside"),
+            ("../../x", "goes outside"),
+            ("..\\..\\.ssh", "goes outside"),
+        ];
+        for (dir, why) in bad {
+            let p = project_worktree_dir_problem(dir).unwrap_or_default();
+            assert!(p.contains(why), "{dir}: {p}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn worktrees_never_go_in_your_home_folder_or_a_dot_folder_outside_the_repository() {
+        let tmp = std::fs::canonicalize(crate::engines::detect::tests::tmp("wt-dirs")).unwrap();
+        let home = tmp.join("home");
+        let proj = home.join("code").join("repo");
+        std::fs::create_dir_all(&proj).unwrap();
+        std::fs::create_dir_all(home.join(".config").join("nvim")).unwrap();
+        let p = |dir: &str, from_project: bool| dir_problem(&proj, &normalize(&proj.join(dir)), from_project, Some(home.clone()));
+        let has = |got: Option<String>, want: &str| assert!(got.as_deref().unwrap_or_default().contains(want), "{got:?} lacks {want}");
+        assert_eq!(p("../repo-worktrees", false), None, "the default");
+        assert_eq!(p(".agents", false), None, "a dot-folder inside the repository is yours to pick");
+        assert_eq!(p("/srv/agents", false), None);
+        has(p("../../.config/nvim/plugin", false), "is in a dot-folder (.config)");
+        has(p(home.to_str().unwrap(), false), "is your home folder");
+        has(p(tmp.to_str().unwrap(), false), "holds your home folder");
+        std::os::unix::fs::symlink(home.join(".config").join("nvim"), proj.join("wt")).unwrap();
+        has(p("wt/plugin", false), "is in a dot-folder (.config)");
+        std::os::unix::fs::symlink(home.join(".config").join("nowhere").join("x"), proj.join("dangling")).unwrap();
+        has(p("dangling/y", false), "broken symlink");
+        assert_eq!(p("../repo-agents", true), None);
+        assert_eq!(p("agents", true), None);
+        has(p(".agents", true), "dot-folder");
+        has(p("../..", true), "is your home folder");
+        has(p("/srv/agents", true), "outside the folder the repository is in");
+        let outside = tmp.join("elsewhere");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, proj.join("out")).unwrap();
+        has(p("out", true), "outside the folder the repository is in");
+        let dotted = home.join(".local").join("src").join(".dotfiles");
+        std::fs::create_dir_all(&dotted).unwrap();
+        assert_eq!(dir_problem(&dotted, &normalize(&dotted.join("../.dotfiles-worktrees")), false, Some(home.clone())), None);
+        assert_eq!(dir_problem(&dotted, &normalize(&dotted.join("../.dotfiles-worktrees")), true, Some(home.clone())), None);
+        // plan() refuses before making any folder
+        let target = tmp.join("dotvim").join(".vim");
+        let cfg = WorktreeConfig { dir: target.to_string_lossy().into(), ..WorktreeConfig::default() };
+        let e = plan(&proj, "x", &cfg).unwrap_err();
+        assert!(e.contains("won't put worktrees in") && e.contains("is in a dot-folder (.vim)"), "{e}");
+        assert!(!target.exists(), "nothing made");
+        let cfg = WorktreeConfig { dir: "out/plugins".into(), dir_from_project: true, ..WorktreeConfig::default() };
+        let e = plan(&proj, "y", &cfg).unwrap_err();
+        assert!(e.ends_with("is outside the folder the repository is in (check [worktree] dir in .vigent.toml)"), "{e}");
+        assert!(!outside.join("plugins").exists(), "nothing made");
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

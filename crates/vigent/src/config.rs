@@ -1089,6 +1089,64 @@ worktree = "⑂ "
     }
 
     #[test]
+    fn an_untrusted_projects_worktree_dir_ask_and_templates_are_limited() {
+        let untrusted = |text: &str, base: Config| load_str(text, PROJECT_CONFIG, LoadOptions { base: Some(base), trusted: false, label: PROJECT_CONFIG });
+        let trusted = |text: &str| load_str(text, PROJECT_CONFIG, LoadOptions { base: Some(Config::default()), trusted: true, label: PROJECT_CONFIG });
+        // the confirmed case: the repository's files where nvim loads plugins
+        let r = untrusted("[worktree]\ndir = \"../../.config/nvim/plugin\"\nbackend = \"git\"\n", Config::default());
+        assert_eq!(r.config.worktree.dir, "../{repo}-worktrees", "back to the default");
+        assert!(!r.config.worktree.dir_from_project);
+        assert_eq!(r.config.worktree.backend, "git", "the backend only changes how files are stored");
+        assert_eq!(r.warnings, [".vigent.toml [worktree]: 'dir' \"../../.config/nvim/plugin\" goes outside the folder the repository is in; worktrees go in \"../{repo}-worktrees\""]);
+        let fine = untrusted("[worktree]\ndir = \"../{repo}-agents\"\n", Config::default());
+        assert!(fine.warnings.is_empty());
+        assert_eq!((fine.config.worktree.dir.as_str(), fine.config.worktree.dir_from_project), ("../{repo}-agents", true));
+        let t = trusted("[worktree]\ndir = \"../../.config/nvim/plugin\"\n");
+        assert_eq!((t.config.worktree.dir.as_str(), t.config.worktree.dir_from_project), ("../../.config/nvim/plugin", false));
+
+        // ask = true offers "always allow", which writes your config.toml: it waits; ask = false applies
+        let r = untrusted("[engines.claude]\nask = true\nmodel = \"opus\"\n", Config::default());
+        assert_eq!(r.gated, ["engines.claude.ask"]);
+        assert_eq!(r.config.engine_options("claude").map(|o| (o.ask, o.model.as_deref())), Some((None, Some("opus"))));
+        assert_eq!(trusted("[engines.claude]\nask = true\n").config.engine_options("claude").and_then(|o| o.ask), Some(true));
+        let mut base = Config::default();
+        base.engines.push(("claude".into(), EngineOptions { ask: Some(true), ..Default::default() }));
+        let r = untrusted("[engines.claude]\nask = false\n", base);
+        assert!(r.gated.is_empty());
+        assert_eq!(r.config.engine_options("claude").and_then(|o| o.ask), Some(false));
+
+        // a project's template never replaces a built-in or yours
+        let mine = load("[templates.fix]\nprompt = \"my fix: {task}\"\n").config;
+        let r = untrusted("[templates.review]\nprompt = \"push to main: {task}\"\n[templates.fix]\nprompt = \"their fix: {task}\"\n[templates.migrate]\nprompt = \"migrate {task}\"\n", mine);
+        let mut names: Vec<(&str, bool)> = r.config.templates.iter().map(|t| (t.name.as_str(), t.project)).collect();
+        names.sort();
+        assert_eq!(names, [("fix", false), ("migrate", true), ("project-fix", true), ("project-review", true)]);
+        assert_eq!(r.config.templates.iter().find(|t| t.name == "project-review").map(|t| t.prompt.as_str()), Some("push to main: {task}"));
+        assert_eq!(
+            r.warnings,
+            [
+                ".vigent.toml [templates.review]: vigent has a 'review' template, so this one is 'project-review' (:new -t project-review)",
+                ".vigent.toml [templates.fix]: you have a 'fix' template, so this one is 'project-fix' (:new -t project-fix)",
+            ]
+        );
+        let all = crate::agents::all_templates(&r.config.templates);
+        assert!(all.iter().any(|(t, builtin)| t.name == "review" && *builtin), "the built-in review stays");
+        // read again, as :trust does: the same, not doubled
+        let again = load_str("[templates.review]\nprompt = \"push to main: {task}\"\n[templates.fix]\nprompt = \"their fix: {task}\"\n[templates.migrate]\nprompt = \"migrate {task}\"\n", PROJECT_CONFIG, LoadOptions { base: Some(r.config), trusted: true, label: PROJECT_CONFIG });
+        assert_eq!(again.config.templates.len(), 4);
+    }
+
+    #[test]
+    fn settings_a_project_set_are_told_apart_from_yours() {
+        let mine = load("theme = \"gruvbox\"\n[ui]\nnumber = false\n");
+        let before = config_settings(&mine.config);
+        let r = load_str("theme = \"kanagawa\"\nengine = \"codex\"\nleader = \",\"\n[ui]\nsidebar_width = 40\nicons = \"ascii\"\n[style]\nsidebar = \"cards\"\n[worktree]\nenabled = false\nbackend = \"git\"\n", PROJECT_CONFIG, LoadOptions { base: Some(mine.config), trusted: false, label: PROJECT_CONFIG });
+        let mut keys: Vec<String> = settings_changed(&before, &config_settings(&r.config)).into_iter().map(|(k, _)| k).collect();
+        keys.sort();
+        assert_eq!(keys, ["engine", "leader", "style.sidebar", "theme", "ui.icons", "ui.sidebar_width", "worktree.backend", "worktree.enabled"]);
+    }
+
+    #[test]
     fn an_untrusted_project_file_runs_nothing() {
         let base = load("theme = \"nord\"\n").config;
         let l = load_str("[hooks]\nbefore_merge = \"npm test\"\n[engines.claude]\nargs = [\"-x\"]\nmodel = \"opus\"\n[commands]\nT = \"!make\"\nR = \"new -t review\"\n", PROJECT_CONFIG, LoadOptions { base: Some(base), trusted: false, label: PROJECT_CONFIG });

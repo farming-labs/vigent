@@ -631,8 +631,12 @@ fn set_key_change(a: &mut App, lhs: &str, rhs: Option<String>) {
 
 /// Write what :settings changed into config.toml, keeping everything else in the file as it is.
 pub fn save(app: &mut App) -> String {
+    save_to(app, &config::config_path())
+}
+
+fn save_to(app: &mut App, file: &Path) -> String {
     use crate::config_edit::{set_toml_value, toml_str};
-    let file = config::config_path();
+    let file = file.to_path_buf();
     let mut text = crate::permissions::config_text(&file);
     let c = &app.config;
     let now = config::settings_values(Some(&app.theme.name), Some(c.engine.as_deref().unwrap_or("auto")), Some(&app.keymap.leader), &c.ui, &c.style, &c.worktree);
@@ -725,5 +729,42 @@ mod tests {
         feed(&mut a, "<Esc>");
         assert!(a.keymap.lookup(KeyMode::Normal, &["x".into()], false).exact.is_none());
         assert_eq!(a.cfg.panel.as_ref().unwrap().message, "cancelled");
+    }
+
+    #[test]
+    fn saving_settings_leaves_the_projects_values_in_its_file() {
+        let dir = crate::engines::detect::tests::tmp("settings-save");
+        let file = dir.join("config.toml");
+        std::fs::write(&file, "theme = \"gruvbox\"\n[ui]\nnumber = false\n").unwrap();
+        let mine = config::load(&file, config::LoadOptions::default()).config;
+        let before = config::config_settings(&mine);
+        let project = "theme = \"kanagawa\"\nengine = \"codex\"\n[ui]\nsidebar_width = 40\nicons = \"ascii\"\n[style]\nsidebar = \"cards\"\n[worktree]\nenabled = false\nbackend = \"git\"\n";
+        let mut merged = config::load_str(project, config::PROJECT_CONFIG, config::LoadOptions { base: Some(mine), trusted: false, label: config::PROJECT_CONFIG }).config;
+        merged.project_settings = config::settings_changed(&before, &config::config_settings(&merged));
+        let mut a = crate::app::tests::app();
+        a.config = merged;
+        a.theme.name = "kanagawa".into();
+        open(&mut a);
+        a.cfg.panel.as_mut().unwrap().select("Sidebar side");
+        feed(&mut a, "l");
+        assert!(save_to(&mut a, &file).starts_with("saved to"));
+        let text = std::fs::read_to_string(&file).unwrap();
+        let saved = config::load(&file, config::LoadOptions::default()).config;
+        assert_eq!(saved.ui.sidebar_position, "right", "your change is saved");
+        assert_eq!(saved.theme.as_deref(), Some("gruvbox"), "your theme stays");
+        assert!(!saved.ui.number);
+        for not_there in ["kanagawa", "codex", "sidebar_width = 40", "icons = \"ascii\"", "\"cards\"", "enabled = false", "backend = \"git\""] {
+            assert!(!text.contains(not_there), "{not_there} in {text}");
+        }
+        // a project value you change is yours from then on
+        a.cfg.panel.as_mut().unwrap().select("Sidebar width");
+        feed(&mut a, "l");
+        a.cfg.panel.as_mut().unwrap().select("Worktree storage");
+        feed(&mut a, "l");
+        save_to(&mut a, &file);
+        let saved = config::load(&file, config::LoadOptions::default()).config;
+        assert_eq!((saved.ui.sidebar_width, saved.worktree.backend.as_str()), (42, "auto"));
+        assert!(!std::fs::read_to_string(&file).unwrap().contains("kanagawa"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
