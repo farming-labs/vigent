@@ -12,6 +12,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { after, test } from "node:test";
 import { CLI, Tty } from "./support/terminal.mjs";
+import { trustRepo } from "./support/trust.mjs";
 
 const hasPython = spawnSync("python3", ["-c", "import pty"]).status === 0;
 const skip = process.platform === "win32" || !hasPython ? "needs python3 and a Unix pty" : false;
@@ -70,6 +71,8 @@ git(["init", "-q", "-b", "main"], repo);
 fs.writeFileSync(path.join(repo, "README.md"), "# shop\n");
 execFileSync("git", ["add", "-A"], { cwd: repo });
 execFileSync("git", ["commit", "-qm", "init"], { cwd: repo, env: { ...process.env, ...env } });
+// vigent starts agent CLIs only in a repository you've trusted
+trustRepo(repo, env);
 
 test("vigent --version and theme list (the commands to check an install)", { skip }, () => {
 	const version = execFileSync(process.execPath, [CLI, "--version"], { env, encoding: "utf8" }).trim();
@@ -181,6 +184,7 @@ test("@ in a prompt: pick a file in a real terminal, and Claude Code gets the @p
 	fs.writeFileSync(path.join(repo2, "README.md"), "# shop\n");
 	execFileSync("git", ["add", "-A"], { cwd: repo2 });
 	execFileSync("git", ["commit", "-qm", "init"], { cwd: repo2, env: { ...process.env, ...env } });
+	trustRepo(repo2, env);
 	const before = fs.existsSync(claudeLog) ? fs.readFileSync(claudeLog, "utf8").trim().split("\n").length : 0;
 	const t = new Tty([], { cwd: repo2, env });
 	try {

@@ -111,6 +111,10 @@ fn signal_name(sig: i32) -> String {
 
 /// Start pi for agent `i`, in its folder. Errors say why (and the agent's transcript too).
 fn start(app: &mut App, i: usize) -> Result<(), String> {
+    // pi loads the repository's .pi/ (extensions run): not before you trust it
+    if let Some(why) = app.untrusted() {
+        return Err(why);
+    }
     let s = &app.sessions[i];
     let dir = if s.made.is_some() { session_dir(&s.path) } else { None };
     let extra = app.config.engine_options("pi").and_then(|o| o.args.clone()).unwrap_or_default();

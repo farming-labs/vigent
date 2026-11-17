@@ -10,6 +10,7 @@ import * as path from "node:path";
 import { after, test } from "node:test";
 import { realPi } from "./support/pi.mjs";
 import { Tty } from "./support/terminal.mjs";
+import { trustRepo } from "./support/trust.mjs";
 
 const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "vigent-pilive-")));
 after(() => fs.rmSync(tmp, { recursive: true, force: true }));
@@ -29,6 +30,8 @@ test("vigent --engine pi: a prompt runs pi's whole loop in the agent's worktree,
 		{ text: "The badge counted lines; it now sums quantities." },
 	]);
 	const env = { ...pi.env, XDG_CONFIG_HOME: path.join(tmp, "xdg"), XDG_STATE_HOME: path.join(tmp, "state"), RIFTRI_BINARY: path.join(tmp, "none"), TERM: "xterm-256color" };
+	// vigent starts agent CLIs only in a repository you've trusted
+	trustRepo(repo, env);
 	const t = new Tty(["--engine", "pi"], { cwd: repo, env, cols: 140, rows: 32 });
 	try {
 		await t.waitFor(/SESSIONS/);

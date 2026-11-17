@@ -9,6 +9,7 @@ import { adapterFor, CliSession } from "../dist/cli-engines.js";
 import { loadConfig, PROJECT_CONFIG } from "../dist/config.js";
 import { CUSTOM_ENGINES, ENGINE_NAMES, isEngineId, quickEngines } from "../dist/engines.js";
 import { Tty } from "./support/terminal.mjs";
+import { trustRepo } from "./support/trust.mjs";
 
 const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "vigent-custom-")));
 after(() => fs.rmSync(tmp, { recursive: true, force: true }));
@@ -129,6 +130,8 @@ test("the real vigent runs a custom engine from config.toml", { timeout: 60000 }
 	const cfg = path.join(tmp, "xdg");
 	write("xdg/vigent/config.toml", `engine = "gemini"\n[engines.gemini]\nname = "Gemini CLI"\ncommand = ["gemini", "-p", "{prompt}"]\n`);
 	const env = { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}`, XDG_CONFIG_HOME: cfg, XDG_STATE_HOME: path.join(tmp, "state"), RIFTRI_BINARY: path.join(tmp, "none"), TERM: "xterm-256color" };
+	// vigent starts agent CLIs only in a repository you've trusted
+	trustRepo(repo, env);
 	const t = new Tty([], { cwd: repo, env, cols: 130, rows: 30 });
 	try {
 		await t.waitFor(/● Gemini CLI/);

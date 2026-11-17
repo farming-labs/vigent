@@ -12,7 +12,8 @@ import { staleBuild, VERSION_TEXT } from "./version.js";
 import { CliSession } from "./cli-engines.js";
 import { CUSTOM_ENGINES, defaultEngine, detectEngines, ENGINE_BINS, ENGINE_NAMES, type EngineId, isEngineId, onPath, piConnected, quickEngines, engineEnv } from "./engines.js";
 import { CONFIG_TEMPLATE, configPath, loadConfig, PROJECT_CONFIG, saveAllowRules, settingsChanged, settingsValues } from "./config.js";
-import { executeProjectTrust, isTrusted, trustFile } from "./trust.js";
+import { executeTrust, isTrusted, revokeRepo, trustedEntries, trustFile, trustRepo, workspaceAt } from "./trust.js";
+import { neutralDir, setProbeDir } from "./workspace.js";
 import { setTomlValue } from "./config-edit.js";
 import { createDemoSessions } from "./demo.js";
 import { buildKeymap, KEY_MODES } from "./keys.js";
@@ -66,6 +67,9 @@ themes:
   vigent worktree gc                         free riftri storage no worktree uses
   vigent config init                         write a commented config.toml
   vigent config check                        validate config.toml (theme, options, keys)
+  vigent trust                               trust this repository: its agent CLIs may run, and its .vigent.toml
+  vigent trust --list                        what's trusted
+  vigent trust --revoke [folder]             forget a repository's trust (and its .vigent.toml's)
 
 registry (themes, templates, keymaps, commands, engines and setups people share):
   vigent add <name>                          show an entry's file and what it runs, then add it
@@ -98,6 +102,44 @@ Config: ~/.config/vigent/config.toml   Themes: ~/.config/vigent/themes/
 function flag(argv: string[], name: string): string | undefined {
 	const i = argv.indexOf(name);
 	return i >= 0 ? argv[i + 1] : undefined;
+}
+
+/**
+ * `vigent trust`: trust this repository (outside one, this folder), so its agent
+ * CLIs may run, and its .vigent.toml as it is now. `--list` shows what's
+ * trusted, `--revoke [folder]` forgets a repository's trust.
+ */
+function trustCommand(argv: string[]): number {
+	const usage = "usage: vigent trust [--list | --revoke [folder]]";
+	if (argv[0] === "--list") {
+		const all = trustedEntries();
+		if (!all.length) console.log("nothing is trusted yet");
+		for (const e of all) console.log(`${e.kind === "repository" ? "repository" : "file      "}  ${e.path}`);
+		return 0;
+	}
+	if (argv[0] === "--revoke") {
+		const from = argv[1] !== undefined ? path.resolve(argv[1]) : process.cwd();
+		const dir = (fs.existsSync(from) ? repoRoot(from) : undefined) ?? from;
+		console.log(revokeRepo(dir) ? `revoked trust in ${dir}` : `${dir} isn't trusted`);
+		return 0;
+	}
+	if (argv.length) {
+		console.error(usage);
+		return 1;
+	}
+	const root = repoRoot(process.cwd());
+	const dir = path.resolve(root ?? process.cwd());
+	trustRepo(dir);
+	console.log(`trusted ${dir}`);
+	const file = path.join(dir, PROJECT_CONFIG);
+	if (root && fs.existsSync(file)) {
+		const content = fs.readFileSync(file, "utf8");
+		// read over your config, as vigent starts: what waits only because it calls one of your commands is named too
+		const { gated } = loadConfig(file, { base: loadConfig().config, trusted: false, label: PROJECT_CONFIG });
+		trustFile(file, content);
+		console.log(`trusted ${file}${gated.length ? `: ${gated.join(", ")} will run` : ""}`);
+	}
+	return 0;
 }
 
 async function themeCommand(argv: string[]): Promise<number> {
@@ -251,20 +293,7 @@ async function main(): Promise<number | undefined> {
 		);
 		return warnings.length === 0 ? 0 : 1;
 	}
-	if (argv[0] === "trust") {
-		const root = repoRoot(process.cwd());
-		const file = root ? path.join(root, PROJECT_CONFIG) : undefined;
-		if (!file || !fs.existsSync(file)) {
-			console.error(`vigent: no ${PROJECT_CONFIG} here${root ? ` (looked in ${root})` : " (not in a git repository)"}`);
-			return 1;
-		}
-		const content = fs.readFileSync(file, "utf8");
-		// read over your config, as vigent starts: what waits only because it calls one of your commands is named too
-		const { gated } = loadConfig(file, { base: loadConfig().config, trusted: false, label: PROJECT_CONFIG });
-		trustFile(file, content);
-		console.log(`trusted ${file}${gated.length ? `: ${gated.join(", ")} will run` : ""}`);
-		return 0;
-	}
+	if (argv[0] === "trust") return trustCommand(argv.slice(1));
 	if (argv[0] === "config" && argv[1] === "init") {
 		const file = configPath();
 		if (fs.existsSync(file)) {
@@ -316,6 +345,10 @@ async function main(): Promise<number | undefined> {
 	const demo = argv.includes("--demo") || (!chosenEngine && !piConnected() && !anyCli);
 	const modelArg = flag(argv, "--model");
 	const model = modelArg ?? config.model ?? "claude-sonnet-4-5";
+	// agent CLIs load the repository's own settings: none runs there until you trust it,
+	// and the engines' own commands (sign-in checks, model lists) run outside it until then
+	const workspace = workspaceAt(process.cwd(), root);
+	if (!workspace.trusted) setProbeDir(neutralDir());
 
 	const themeName = flag(argv, "--theme") ?? config.theme ?? "default";
 	let theme = BUILTIN_THEMES.default;
@@ -349,6 +382,7 @@ async function main(): Promise<number | undefined> {
 			})
 			.catch(() => {});
 	}
+	app.trustWorkspace = workspace;
 	app.preferredEngine = chosenEngine ?? "auto";
 	app.defaultEngine = () => (app.preferredEngine === "auto" ? defaultEngine(app.engines) : app.preferredEngine);
 	app.detectEngines = () => detectEngines();
@@ -397,7 +431,7 @@ async function main(): Promise<number | undefined> {
 	const piModel = modelArg && (!engineArg || engineArg === "pi") ? modelArg : (config.engines.pi?.model ?? config.model ?? "default");
 	const piSession = (name: string, m: string, o: { cwd: string; worktree?: WorktreeInfo; sessionDir?: string; effort?: string; after?: Promise<unknown>; fresh?: boolean }) =>
 		// the same object, not a copy: a worktree made in the background fills in sessionDir before pi starts
-		new PiSession(name, m, Object.assign(o, { extraArgs: config.engines.pi?.args }));
+		new PiSession(name, m, Object.assign(o, { extraArgs: config.engines.pi?.args, blocked: () => app.untrusted() }));
 
 	/** A Claude Code / Codex / OpenCode agent; its conversation id is saved so it survives a restart. */
 	const cliSession = (name: string, engine: Exclude<EngineId, "pi">, requested: string | undefined, cwd: string, wt?: WorktreeInfo, resumeId?: string, effort?: string, fork?: { at?: string }) =>
@@ -410,6 +444,8 @@ async function main(): Promise<number | undefined> {
 			effort,
 			// read at each prompt: :permissions changes them while agents are open
 			extraArgs: () => config.engines[engine]?.args,
+			// nothing runs in a repository you haven't trusted
+			blocked: () => app.untrusted(),
 			// e.g. Claude Code without ANTHROPIC_API_KEY when it has a Claude account (see detectClaude)
 			env: () => engineEnv(app.engines?.find((e) => e.id === engine)),
 			// Claude Code's permission rules: [engines.claude] allow, and ask (opt-in) to allow a refused tool and retry
@@ -436,11 +472,12 @@ async function main(): Promise<number | undefined> {
 	app.commandInfo = config.commandInfo;
 	// :trust: let this project's .vigent.toml run its commands, from now on
 	app.trustProject = () =>
-		executeProjectTrust({
+		executeTrust({
 			app,
 			config,
 			projectFile,
 			reloadPermissions: savedPermissions,
+			workspace,
 		});
 	for (const [id, opts] of Object.entries(config.engines)) {
 		if (opts?.model) app.newAgentModel[id as EngineId] = opts.model;
@@ -617,13 +654,19 @@ async function main(): Promise<number | undefined> {
 		for (const b of blocked) warnings.push(`couldn't reopen the agent in ${b.path}: ${b.reason}`);
 		// a stranded agent moves for good, so wait to learn which engine is signed in
 		if (agents.some((a) => stranded(a.meta))) await detectEngines().then((engines) => app.setEngines(engines), () => {});
+		let held = 0;
 		for (const { meta, worktree, backend } of agents) {
 			try {
-				app.addSession(reopen(meta, { ...worktree, riftri: backend }), false);
+				const s = reopen(meta, { ...worktree, riftri: backend });
+				// shown, but resumed only once you trust the repository
+				if (app.holdUntilTrusted(s)) held++;
+				app.addSession(s, false);
 			} catch (err) {
 				warnings.push(`couldn't reopen '${meta.name}': ${(err as Error).message}`);
 			}
 		}
+		const untrusted = app.untrusted();
+		if (held && untrusted) warnings.push(untrusted);
 		if (app.sessions.length > 0) {
 			app.focusIdx = 0;
 			app.notify(`reopened ${app.sessions.length} agent${app.sessions.length === 1 ? "" : "s"} from last time`, "Comment");

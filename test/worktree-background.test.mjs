@@ -11,6 +11,7 @@ import * as path from "node:path";
 import { after, test } from "node:test";
 import { addWorktree, planWorktree } from "../dist/worktree.js";
 import { Tty } from "./support/terminal.mjs";
+import { trustRepo } from "./support/trust.mjs";
 
 const skip = process.platform === "win32" || spawnSync("python3", ["-c", "import pty"]).status !== 0 ? "needs python3 and a Unix pty" : false;
 const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "vigent-bgwt-")));
@@ -77,6 +78,8 @@ say({ type: "result", subtype: "success", is_error: false, session_id: "s1" });
 	fs.mkdirSync(path.join(home, ".config", "vigent"), { recursive: true });
 	fs.writeFileSync(path.join(home, ".config", "vigent", "config.toml"), 'engine = "claude"\n');
 	const env = { ...identity, PATH: bin, HOME: home, XDG_CONFIG_HOME: path.join(home, ".config"), XDG_STATE_HOME: path.join(home, ".state"), TERM: "xterm-256color", LANG: "en_US.UTF-8", RIFTRI_BINARY: path.join(tmp, "no-riftri") };
+	// vigent starts agent CLIs only in a repository you've trusted
+	trustRepo(root, env);
 	const t = new Tty([], { cwd: root, env, cols: 140, rows: 32 });
 	try {
 		await t.waitFor(/Claude Code/);

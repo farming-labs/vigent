@@ -68,6 +68,7 @@ import { MESSAGE_STYLES, resolveStyle, SEPARATOR_GLYPHS, SEPARATOR_STYLES, SIDEB
 import { mergeWorktree, openPullRequest } from "./review.js";
 import type { PiSession } from "./pi-session.js";
 import type { Session, SessionState, TranscriptItem } from "./session.js";
+import { TRUST_HOLD, untrustedMessage, untrustedNote, type Workspace as TrustWorkspace } from "./workspace.js";
 import { type Attr, BUILTIN_THEMES, extractPalette, listThemes, loadTheme, type Painter, RESET, sgr, type Theme, themeFileFor, themesDir } from "./theme.js";
 import { parseHighlightCommand } from "./vimcolors.js";
 import { type CompletionSources, completeCommandLine } from "./completion.js";
@@ -1429,7 +1430,9 @@ export class App implements Component {
 				const waiting = s.submit(text);
 				// a held agent has no current run: it's waiting for its worktree (made in the background, or a setup hook)
 				const after = s.holdReason ? "once its worktree is ready" : "after the current run";
-				if (waiting > 0) this.setMessage(`queued: '${s.name}' gets it ${after} (${waiting} waiting)`, "Comment");
+				// or for :trust: the prompt waits, and starting it says why
+				if (waiting > 0 && s.holdReason === TRUST_HOLD) this.setMessage(this.untrusted() ?? TRUST_HOLD, "ErrorMsg");
+				else if (waiting > 0) this.setMessage(`queued: '${s.name}' gets it ${after} (${waiting} waiting)`, "Comment");
 				this.scrollOffset = 0;
 			}
 		} else if (this.mode === "COMMAND") {
@@ -1833,6 +1836,31 @@ export class App implements Component {
 	ownEngineOptions: (id: EngineId) => EngineOptions = (id) => this.engineOptions[id] ?? {};
 	/** :trust (set by the CLI; it knows where the project's config is) */
 	trustProject: () => string = () => `no ${PROJECT_CONFIG} in this project`;
+	/** the repository agents run in and whether you've trusted it (set by the CLI; unset, nothing waits for trust) */
+	trustWorkspace?: TrustWorkspace;
+
+	/** Why no agent CLI may start here yet: the repository isn't trusted (never in demo mode). */
+	untrusted(): string | undefined {
+		const w = this.trustWorkspace;
+		return this.demo || !w || w.trusted ? undefined : untrustedMessage(w);
+	}
+
+	/** A reopened agent in a repository that isn't trusted: shown, but nothing runs until :trust. */
+	holdUntilTrusted(s: Session): boolean {
+		if (!this.untrusted()) return false;
+		s.hold(TRUST_HOLD);
+		return true;
+	}
+
+	/** The repository is trusted now: the agents that waited for it start, and their prompts go. */
+	releaseTrustHolds() {
+		for (const s of this.sessions) {
+			if (s.holdReason !== TRUST_HOLD) continue;
+			s.release();
+			s.warm();
+		}
+		this.tui.requestRender();
+	}
 	/** runs a hook (replaced in tests) */
 	hookRunner: typeof runHook = runHook;
 	/** [commands] and :command: your own ex commands */
@@ -2174,6 +2202,8 @@ export class App implements Component {
 	 */
 	private switchEngine(s: Session, to: ModelPick) {
 		const name = ENGINE_NAMES[to.engine];
+		const untrusted = this.untrusted();
+		if (untrusted) return this.setMessage(untrusted, "ErrorMsg");
 		if (this.raceOf(s)) return this.setMessage("a racer keeps its engine; :new starts an agent on another one", "ErrorMsg");
 		const info = this.engines?.find((e) => e.id === to.engine);
 		if (info && !info.connected && !info.checking) {
@@ -2398,6 +2428,8 @@ export class App implements Component {
 	private execRace(arg: string): Promise<void> | void {
 		if (!arg) return this.openRace();
 		if (arg === "pick") return this.pickRacer(false);
+		const untrusted = this.untrusted();
+		if (untrusted) return this.setMessage(untrusted, "ErrorMsg");
 		const parsed = parseRaceArgs(arg);
 		if (parsed.error) return this.setMessage(parsed.error, "ErrorMsg");
 		let prompt = parsed.task;
@@ -3176,6 +3208,12 @@ export class App implements Component {
 	 * Returns it, or undefined after showing why it couldn't start.
 	 */
 	startAgent(name: string, opts: { worktree?: boolean; model?: string; engine?: string; effort?: string } = {}): Session | undefined {
+		// the agent CLI would load the repository's own settings: not before you trust it
+		const untrusted = this.untrusted();
+		if (untrusted) {
+			this.setMessage(untrusted, "ErrorMsg");
+			return undefined;
+		}
 		const engine = opts.engine ?? this.defaultEngine();
 		if (!isEngineId(engine)) {
 			this.setMessage(`unknown engine '${engine}': pi, claude, codex or opencode`, "ErrorMsg");
@@ -3769,6 +3807,7 @@ export class App implements Component {
 		}
 		try {
 			const s = this.attachSession({ branch: w.branch, path: w.path });
+			this.holdUntilTrusted(s);
 			this.addSession(s);
 			this.setMessage(`attached '${s.name}' to ${w.branch}`, "ModeMsg");
 		} catch (err) {
@@ -4376,6 +4415,11 @@ export class App implements Component {
 				this.setMessage(`'${parent.name}' is still answering: split once it's done, or :vsplit <agent> to show another one`, "WarningMsg");
 				return;
 			}
+			const untrusted = this.untrusted();
+			if (untrusted) {
+				this.setMessage(untrusted, "ErrorMsg");
+				return;
+			}
 			try {
 				fork = this.forkSession(parent);
 			} catch (err) {
@@ -4739,6 +4783,11 @@ export class App implements Component {
 		if (!this.workspace.root) {
 			add("", "");
 			const note = "(not a git repository: agents will share this folder)";
+			add(P.p("WarningMsg", note), note);
+		}
+		if (!this.demo && this.trustWorkspace && !this.trustWorkspace.trusted) {
+			add("", "");
+			const note = untrustedNote(this.trustWorkspace);
 			add(P.p("WarningMsg", note), note);
 		}
 		const top = Math.max(0, Math.floor((paneH - rows.length) / 2));
@@ -5495,7 +5544,7 @@ const EX_HELP: [string, string][] = [
 	[":cost", "tokens and money each agent has used, and the total"],
 	[":pi", "a pi agent's extensions, commands, skills and prompt templates"],
 	[":serve  /  :serve stop", "follow and prompt your agents from your phone (local: this machine only)"],
-	[":trust", "let this project's .vigent.toml run its hooks and engine arguments"],
+	[":trust", "trust this repository: its agent CLIs may run, and its .vigent.toml's hooks and engine arguments"],
 	[":tree", "the conversation's branches; go back and branch"],
 	[":marks  /  :jumps", "this agent's marks (m{a-z}, '{a-z}) and jump list (<C-o>, <Tab>)"],
 	[":history", "the commands and searches you ran this time"],

@@ -12,6 +12,7 @@ import { after, test } from "node:test";
 import { loadAgentMeta, saveAgentMeta, sessionDir } from "../dist/agents.js";
 import { createWorktree } from "../dist/worktree.js";
 import { Tty } from "./support/terminal.mjs";
+import { trustRepo } from "./support/trust.mjs";
 
 const skip = process.platform === "win32" || spawnSync("python3", ["-c", "import pty"]).status !== 0 ? "needs python3 and a Unix pty" : false;
 
@@ -70,6 +71,8 @@ setTimeout(() => { console.log(JSON.stringify({ loggedIn: false })); process.exi
 	fs.writeFileSync(path.join(repo, "a.js"), "1\n");
 	git("add", "a.js");
 	git("commit", "-qm", "init");
+	// vigent starts agent CLIs only in a repository you've trusted
+	trustRepo(repo, env);
 
 	const worktree = createWorktree(repo, "old agent");
 	// what vigent 0.3 wrote for a pi agent: no engine, pi's model and thinking level

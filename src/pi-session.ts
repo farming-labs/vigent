@@ -51,6 +51,8 @@ export interface PiSessionOptions {
 	after?: Promise<unknown>;
 	/** start a new conversation in sessionDir instead of continuing the last one (an agent that moved here from another engine) */
 	fresh?: boolean;
+	/** why pi can't start here now (the repository isn't trusted yet), asked each time it would start */
+	blocked?: () => string | undefined;
 }
 
 interface Pending {
@@ -97,6 +99,9 @@ export class PiSession extends Session {
 	}
 
 	private start(): Promise<void> {
+		// pi loads the repository's .pi/ (extensions run): not before you trust it
+		const blocked = this.opts.blocked?.();
+		if (blocked) return Promise.reject(new Error(blocked));
 		return new Promise<void>((resolve, reject) => {
 			let child: ChildProcess;
 			try {
@@ -395,6 +400,10 @@ export class PiSession extends Session {
 			this.ready.catch(() => {});
 		}
 		return this.ready;
+	}
+
+	warm(): void {
+		this.alive().catch(() => {});
 	}
 
 	send(text: string): void {

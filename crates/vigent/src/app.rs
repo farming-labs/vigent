@@ -293,6 +293,11 @@ impl App {
         self.scroll = 0;
         match self.sessions[i].submit(text) {
             Submitted::Now(text) => self.send(i, text),
+            // held for :trust: the prompt waits, and starting it says why
+            Submitted::Queued(_) if self.sessions[i].hold_reason.as_deref() == Some(crate::trust::TRUST_HOLD) => {
+                let why = self.untrusted().unwrap_or_else(|| crate::trust::TRUST_HOLD.into());
+                self.say(why, "ErrorMsg");
+            }
             Submitted::Queued(waiting) => {
                 let a = &self.sessions[i];
                 let after = if a.held() { "once its worktree is ready" } else { "after the current run" };

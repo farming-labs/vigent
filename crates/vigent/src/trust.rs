@@ -8,6 +8,12 @@
 //! direnv's `allow`: `:trust` in vigent, or `vigent trust` in the project.
 //! Trust is for the file as it is now (its sha256, in
 //! $XDG_STATE_HOME/vigent/trusted.json); if it changes, vigent asks again.
+//!
+//! The same `:trust` trusts the repository itself (its absolute path, in the
+//! same store), which lets agent CLIs run there (src/workspace.ts): vigent runs
+//! each agent CLI headless, and headless CLIs skip their own "trust this
+//! folder?" question while they load the repository's .claude/, .pi/ and the
+//! like. That lasts until `vigent trust --revoke`.
 
 use std::path::{Path, PathBuf};
 
@@ -15,7 +21,17 @@ use crate::app::App;
 use crate::config::{self, Config, LoadOptions, PROJECT_CONFIG};
 use crate::keys::{KEY_MODES, KeyMode, Keymap, RhsValue};
 
+#[cfg(test)]
+thread_local! {
+    /// a test's own trust store (tests run in parallel, so not $XDG_STATE_HOME)
+    static TEST_STORE: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
 fn state_file() -> PathBuf {
+    #[cfg(test)]
+    if let Some(f) = TEST_STORE.with(|s| s.borrow().clone()) {
+        return f;
+    }
     let base = std::env::var_os("XDG_STATE_HOME")
         .filter(|x| !x.is_empty())
         .map(PathBuf::from)
@@ -86,16 +102,165 @@ pub fn is_trusted(file: &Path, content: &str) -> bool {
     read().get(&key(file)).and_then(|v| v.as_str()) == Some(sha256_hex(content.as_bytes()).as_str())
 }
 
-/// Trust this file as it is now.
-pub fn trust_file(file: &Path, content: &str) -> std::io::Result<()> {
-    let mut all = read();
-    all.insert(key(file), serde_json::Value::String(sha256_hex(content.as_bytes())));
+fn write(all: serde_json::Map<String, serde_json::Value>) -> std::io::Result<()> {
     let f = state_file();
     if let Some(dir) = f.parent() {
         std::fs::create_dir_all(dir)?;
     }
     let text = serde_json::to_string_pretty(&serde_json::Value::Object(all)).unwrap_or_default();
     std::fs::write(f, format!("{text}\n"))
+}
+
+/// Trust this file as it is now.
+pub fn trust_file(file: &Path, content: &str) -> std::io::Result<()> {
+    let mut all = read();
+    all.insert(key(file), serde_json::Value::String(sha256_hex(content.as_bytes())));
+    write(all)
+}
+
+// ---------------------------------------------------------------------
+// the repository (src/workspace.ts, and the repository half of src/trust.ts)
+// ---------------------------------------------------------------------
+
+/// A trusted repository's entry in the store (a file's is its sha256).
+const REPOSITORY: &str = "repository";
+
+/// What a reopened agent waits for, shown in the sidebar instead of "paused".
+pub const TRUST_HOLD: &str = "waiting for :trust";
+
+/// The project files of agent CLIs that run code or change what an agent may do, as the message names them.
+pub const AGENT_CONFIGS: [&str; 9] = [".claude/", ".mcp.json", ".pi/", "opencode.json", "opencode.jsonc", ".opencode/", ".gemini/", ".cursor/", ".codex/"];
+
+/// Where you stand: the folder agents run in, whether it's a git repository, and whether it's trusted.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Workspace {
+    pub dir: PathBuf,
+    pub repo: bool,
+    pub trusted: bool,
+}
+
+impl Workspace {
+    fn kind(&self) -> &'static str {
+        if self.repo { "repository" } else { "folder" }
+    }
+}
+
+/// Which of AGENT_CONFIGS this folder has.
+pub fn agent_configs(dir: &Path) -> Vec<&'static str> {
+    AGENT_CONFIGS
+        .iter()
+        .copied()
+        .filter(|name| match std::fs::metadata(dir.join(name.trim_end_matches('/'))) {
+            Ok(m) => if name.ends_with('/') { m.is_dir() } else { m.is_file() },
+            Err(_) => false,
+        })
+        .collect()
+}
+
+/// What starting an agent says while the repository isn't trusted.
+pub fn untrusted_message(w: &Workspace) -> String {
+    let found = agent_configs(&w.dir);
+    let list = if found.is_empty() { ".claude/, .pi/, …".to_string() } else { found.join(", ") };
+    format!("this {} isn't trusted yet: its agent CLIs would load its own settings ({list}). :trust to allow it", w.kind())
+}
+
+/// The start screen's line while the repository isn't trusted.
+pub fn untrusted_note(w: &Workspace) -> String {
+    format!("this {} isn't trusted yet: :trust lets its agent CLIs run here", w.kind())
+}
+
+fn home() -> PathBuf {
+    std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default()
+}
+
+/// A folder no repository's settings come from: your home folder, else the temp folder.
+pub fn neutral_dir() -> PathBuf {
+    let h = home();
+    if !h.as_os_str().is_empty() && h.is_dir() { h } else { std::env::temp_dir() }
+}
+
+fn same(a: &Path, b: &Path) -> bool {
+    if key(a) == key(b) {
+        return true;
+    }
+    matches!((std::fs::canonicalize(a), std::fs::canonicalize(b)), (Ok(x), Ok(y)) if x == y)
+}
+
+/// Your own folders are never a repository to trust: your home folder and your config folders.
+fn yours(dir: &Path) -> bool {
+    let h = home();
+    let config = std::env::var_os("XDG_CONFIG_HOME").filter(|x| !x.is_empty()).map(PathBuf::from).unwrap_or_else(|| h.join(".config"));
+    [h, config, config::config_dir()].iter().any(|d| !d.as_os_str().is_empty() && same(dir, d))
+}
+
+/// Whether agent CLIs may run in this repository (or folder, outside one).
+pub fn is_repo_trusted(dir: &Path) -> bool {
+    yours(dir) || read().get(&key(dir)).and_then(|v| v.as_str()) == Some(REPOSITORY)
+}
+
+/// Trust this repository: its agent CLIs may run, until revoked. Whether it wasn't trusted before.
+pub fn trust_repo(dir: &Path) -> std::io::Result<bool> {
+    if is_repo_trusted(dir) {
+        return Ok(false);
+    }
+    let mut all = read();
+    all.insert(key(dir), serde_json::Value::String(REPOSITORY.into()));
+    write(all).map(|_| true)
+}
+
+/// Forget a repository's trust, and its .vigent.toml's. Whether either was trusted.
+pub fn revoke_repo(dir: &Path) -> std::io::Result<bool> {
+    let mut all = read();
+    let keys = [key(dir), key(&std::path::absolute(dir).unwrap_or_else(|_| dir.to_path_buf()).join(PROJECT_CONFIG))];
+    let mut any = false;
+    for k in keys {
+        any |= all.remove(&k).is_some();
+    }
+    if any {
+        write(all)?;
+    }
+    Ok(any)
+}
+
+/// Everything trusted, in order: (path, whether it's a repository; else a .vigent.toml as it was when trusted).
+pub fn trusted_entries() -> Vec<(String, bool)> {
+    let mut v: Vec<(String, bool)> = read().into_iter().map(|(k, v)| (k, v.as_str() == Some(REPOSITORY))).collect();
+    v.sort();
+    v
+}
+
+/// Where you stand when vigent starts in `cwd`: the repository (or this folder, outside one), and whether it's trusted.
+pub fn workspace_at(cwd: &Path, root: Option<&Path>) -> Workspace {
+    let dir = std::path::absolute(root.unwrap_or(cwd)).unwrap_or_else(|_| root.unwrap_or(cwd).to_path_buf());
+    let trusted = is_repo_trusted(&dir);
+    Workspace { dir, repo: root.is_some(), trusted }
+}
+
+/// `:trust`: trust the repository, so its agent CLIs may run (agents that waited
+/// for it start), and its .vigent.toml as it is now, if it has one. With nothing
+/// left to trust, it says the repository is trusted (src/trust.ts executeTrust).
+pub fn execute_trust(app: &mut App) -> String {
+    let Some(w) = app.agents.workspace.clone() else {
+        return execute_project_trust(app);
+    };
+    let newly = match trust_repo(&w.dir) {
+        Ok(n) => n,
+        Err(e) => return format!("can't trust this {}: {e}", w.kind()),
+    };
+    if let Some(x) = app.agents.workspace.as_mut() {
+        x.trusted = true;
+    }
+    // the engines' own commands may run here now
+    crate::engines::detect::set_probe_dir(None);
+    let file = project_file(app.root.as_deref()).filter(|f| f.exists()).map(|_| execute_project_trust(app));
+    // the agents that waited go once the file's arguments and hooks are in place
+    app.release_trust_holds();
+    match (newly, file) {
+        (false, Some(f)) => f,
+        (false, None) => format!("this {} is trusted", w.kind()),
+        (true, Some(f)) => format!("trusted this {} · {f}", w.kind()),
+        (true, None) => format!("trusted this {}", w.kind()),
+    }
 }
 
 /// The project's .vigent.toml (at the repository root), if there's a repository.
@@ -174,19 +339,52 @@ fn apply_new_mappings(keymap: &mut Keymap, before: &[(KeyMode, String, RhsValue)
     }
 }
 
-/// `vigent trust`, in the project.
-pub fn command(_args: &[String]) -> i32 {
+/// `vigent trust`: trust this repository (outside one, this folder), so its agent
+/// CLIs may run, and its .vigent.toml as it is now. `--list` shows what's
+/// trusted, `--revoke [folder]` forgets a repository's trust (src/cli.ts trustCommand).
+pub fn command(args: &[String]) -> i32 {
     let cwd = std::env::current_dir().unwrap_or_default();
+    match args.first().map(String::as_str) {
+        Some("--list") => {
+            let all = trusted_entries();
+            if all.is_empty() {
+                println!("nothing is trusted yet");
+            }
+            for (p, repo) in all {
+                println!("{}  {p}", if repo { "repository" } else { "file      " });
+            }
+            return 0;
+        }
+        Some("--revoke") => {
+            let from = args.get(1).map(|a| std::path::absolute(a).unwrap_or_else(|_| PathBuf::from(a))).unwrap_or_else(|| cwd.clone());
+            let dir = if from.exists() { crate::worktree::repo_root(&from) } else { None }.unwrap_or(from);
+            match revoke_repo(&dir) {
+                Ok(true) => println!("revoked trust in {}", dir.display()),
+                Ok(false) => println!("{} isn't trusted", dir.display()),
+                Err(e) => {
+                    eprintln!("vigent: {e}");
+                    return 1;
+                }
+            }
+            return 0;
+        }
+        Some(_) => {
+            eprintln!("usage: vigent trust [--list | --revoke [folder]]");
+            return 1;
+        }
+        None => {}
+    }
     let root = crate::worktree::repo_root(&cwd);
-    let file = project_file(root.as_deref());
-    let Some(file) = file.filter(|f| f.exists()) else {
-        let where_ = match &root {
-            Some(r) => format!(" (looked in {})", r.display()),
-            None => " (not in a git repository)".into(),
-        };
-        eprintln!("vigent: no {PROJECT_CONFIG} here{where_}");
+    let dir = std::path::absolute(root.as_deref().unwrap_or(&cwd)).unwrap_or_else(|_| cwd.clone());
+    if let Err(e) = trust_repo(&dir) {
+        eprintln!("vigent: {e}");
         return 1;
-    };
+    }
+    println!("trusted {}", dir.display());
+    let file = dir.join(PROJECT_CONFIG);
+    if root.is_none() || !file.exists() {
+        return 0;
+    }
     let content = std::fs::read_to_string(&file).unwrap_or_default();
     // read over your config, as vigent starts
     let gated = waiting(&content, config::load(&config::config_path(), LoadOptions::default()).config);
@@ -235,6 +433,164 @@ mod tests {
         crate::commands::exec(&mut app, "delcommand Test");
         crate::commands::exec(&mut app, "command! Hi !echo hi");
         assert_eq!(waiting(project, in_use(&app)), ["keys.normal.<leader>h"]);
+    }
+
+    /// A temp folder of its own, with this test's own trust store; git-initialized, with `files`.
+    fn repo_with(name: &str, files: &[&str]) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("vigent-trust-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for f in files {
+            let p = dir.join(f);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, "{}").unwrap();
+        }
+        TEST_STORE.with(|s| *s.borrow_mut() = Some(dir.join("state").join("trusted.json")));
+        dir
+    }
+
+    #[test]
+    fn the_message_names_the_agent_configs_the_repository_has() {
+        let dir = repo_with("configs", &[".claude/settings.json", ".pi/extensions/x.ts", "opencode.json", ".codex/config.toml"]);
+        assert_eq!(agent_configs(&dir), [".claude/", ".pi/", "opencode.json", ".codex/"]);
+        let w = Workspace { dir: dir.clone(), repo: true, trusted: false };
+        assert_eq!(untrusted_message(&w), "this repository isn't trusted yet: its agent CLIs would load its own settings (.claude/, .pi/, opencode.json, .codex/). :trust to allow it");
+        let bare = repo_with("bare", &[]);
+        assert_eq!(untrusted_message(&Workspace { dir: bare.clone(), repo: true, trusted: false }), "this repository isn't trusted yet: its agent CLIs would load its own settings (.claude/, .pi/, …). :trust to allow it");
+        assert_eq!(untrusted_message(&Workspace { dir: bare.clone(), repo: false, trusted: false }), "this folder isn't trusted yet: its agent CLIs would load its own settings (.claude/, .pi/, …). :trust to allow it");
+        assert_eq!(untrusted_note(&w), "this repository isn't trusted yet: :trust lets its agent CLIs run here");
+        // a file named like a folder doesn't count, nor a folder named like a file
+        let odd = repo_with("odd", &["opencode.json/x"]);
+        std::fs::write(odd.join(".claude"), "").unwrap();
+        assert!(agent_configs(&odd).is_empty());
+        for d in [dir, bare, odd] {
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
+
+    #[test]
+    fn a_repositorys_trust_is_its_path_in_the_same_store() {
+        let dir = repo_with("store", &[]);
+        assert!(!is_repo_trusted(&dir));
+        assert!(trust_repo(&dir).unwrap());
+        assert!(!trust_repo(&dir).unwrap(), "already trusted");
+        assert!(is_repo_trusted(&dir));
+        let store: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir.join("state").join("trusted.json")).unwrap()).unwrap();
+        assert_eq!(store[dir.to_string_lossy().as_ref()], "repository");
+        trust_file(&dir.join(PROJECT_CONFIG), "x").unwrap();
+        assert_eq!(trusted_entries(), [(dir.to_string_lossy().to_string(), true), (dir.join(PROJECT_CONFIG).to_string_lossy().to_string(), false)]);
+        assert!(revoke_repo(&dir).unwrap());
+        assert!(!is_repo_trusted(&dir) && !is_trusted(&dir.join(PROJECT_CONFIG), "x"), "the repository and its .vigent.toml");
+        assert!(!revoke_repo(&dir).unwrap());
+        assert!(is_repo_trusted(&home()), "your home folder is never a repository to trust");
+        assert_eq!(workspace_at(&dir.join("sub"), None), Workspace { dir: dir.join("sub"), repo: false, trusted: false }, "outside a repository, the folder itself");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// An App in `dir`, a repository that isn't trusted.
+    fn untrusted_app(dir: &Path) -> App {
+        let mut app = crate::app::tests::app();
+        app.cwd = dir.to_path_buf();
+        app.root = Some(dir.to_path_buf());
+        app.config.worktree.enabled = false;
+        app.agents.workspace = Some(workspace_at(dir, Some(dir)));
+        app
+    }
+
+    #[test]
+    fn untrusted_starting_an_agent_runs_nothing_and_says_why_then_trust_lets_it() {
+        let dir = repo_with("start", &[".claude/settings.json"]);
+        let mut app = untrusted_app(&dir);
+        let expected = "this repository isn't trusted yet: its agent CLIs would load its own settings (.claude/). :trust to allow it";
+        assert!(app.start_agent("fix it", Default::default()).is_none());
+        assert_eq!(app.message, (expected.to_string(), "ErrorMsg"));
+        app.input = "fix the bug".into();
+        app.submit();
+        crate::commands::exec(&mut app, "new other task");
+        crate::commands::exec(&mut app, "race the task");
+        assert_eq!(app.message.0, expected);
+        assert!(app.sessions.is_empty());
+        assert_eq!(crate::engines::select::launch(&app, "claude").blocked.as_deref(), Some(expected));
+        crate::commands::exec(&mut app, "trust");
+        assert_eq!(app.message.0, "trusted this repository");
+        assert_eq!(app.untrusted(), None);
+        assert_eq!(crate::engines::select::launch(&app, "claude").blocked, None);
+        assert!(app.start_agent("fix it", Default::default()).is_some());
+        crate::commands::exec(&mut app, "trust");
+        assert_eq!(app.message.0, "this repository is trusted", ":trust with nothing left to trust says so");
+        // demo mode never waits
+        let mut demo = untrusted_app(&repo_with("demo", &[]));
+        demo.serve.demo = true;
+        assert_eq!(demo.untrusted(), None);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_reopened_agent_waits_for_trust_and_its_cli_never_runs_before() {
+        let dir = repo_with("restore", &[".pi/extensions/x.ts"]);
+        let mut app = untrusted_app(&dir);
+        let marker = dir.join("ran");
+        let bin = dir.join("fake-claude");
+        std::fs::write(&bin, format!("#!/bin/sh
+pwd >> {}
+", marker.display())).unwrap();
+        std::process::Command::new("chmod").arg("755").arg(&bin).status().unwrap();
+        let i = app.add_session(crate::session::Session::new(0, "from last time", "claude", dir.clone()), true);
+        assert!(app.hold_until_trusted(i));
+        assert_eq!(app.sessions[i].hold_reason.as_deref(), Some(TRUST_HOLD));
+        app.input = "carry on".into();
+        app.submit();
+        assert_eq!(app.message.0, "this repository isn't trusted yet: its agent CLIs would load its own settings (.pi/). :trust to allow it");
+        assert_eq!(app.sessions[i].queue, ["carry on"], "the prompt waits");
+        // a turn sent straight to the session runs nothing either
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut launch = crate::engines::select::launch(&app, "claude");
+        launch.bin = bin.to_string_lossy().into_owned();
+        app.sessions[i].run("sneaked in".into(), &launch, tx.clone());
+        assert!(app.sessions[i].child.is_none());
+        assert!(matches!(app.sessions[i].items.last(), Some(crate::session::Item::Error(e)) if e.starts_with("error: this repository isn't trusted yet")));
+        // nor pi
+        let p = app.add_session(crate::session::Session::new(0, "pi agent", "pi", dir.clone()), false);
+        crate::engines::pi::warm(&mut app, p);
+        assert!(app.sessions[p].pi.is_none());
+        assert!(!marker.exists(), "the agent CLI never ran");
+        // trusted: the hold goes (the queued prompt is sent), and a turn runs
+        app.sessions[i].queue.clear();
+        crate::commands::exec(&mut app, "trust");
+        assert_eq!(app.message.0, "trusted this repository");
+        assert_eq!(app.sessions[i].hold_reason, None);
+        let mut launch = crate::engines::select::launch(&app, "claude");
+        launch.bin = bin.to_string_lossy().into_owned();
+        app.sessions[i].state = crate::session::State::Idle;
+        app.sessions[i].run("go".into(), &launch, tx);
+        let _ = app.sessions[i].child.take().expect("it runs now").wait();
+        assert_eq!(std::fs::read_to_string(&marker).unwrap().trim(), dir.to_string_lossy());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn model_lists_run_outside_a_repository_you_havent_trusted() {
+        let dir = repo_with("models", &[".pi/extensions/x.ts"]);
+        let log = dir.join("pi-cwd");
+        let bin = dir.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("pi"), format!("#!/bin/sh
+pwd > {}
+echo 'provider  model' >&2
+echo 'anthropic  claude-x' >&2
+", log.display())).unwrap();
+        std::process::Command::new("chmod").arg("755").arg(bin.join("pi")).status().unwrap();
+        let neutral = dir.join("neutral");
+        std::fs::create_dir_all(&neutral).unwrap();
+        let env: crate::engines::detect::Env = [("PATH".to_string(), format!("{}:/usr/bin:/bin", bin.display()))].into_iter().collect();
+        // the probe folder is the process's: only this test sets it, and puts it back
+        crate::engines::detect::set_probe_dir(Some(neutral.clone()));
+        let models = crate::engines::choices::pi_models(&env);
+        let ran_in = std::fs::read_to_string(&log).unwrap_or_default();
+        crate::engines::detect::set_probe_dir(None);
+        assert_eq!(models, [("anthropic".to_string(), "claude-x".to_string())]);
+        assert_eq!(ran_in.trim(), neutral.to_string_lossy());
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

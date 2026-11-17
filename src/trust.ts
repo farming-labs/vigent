@@ -8,6 +8,10 @@
  * they name or start :serve) only count once you trust that file, like
  * direnv's `allow`: `:trust` in vigent, or `vigent trust` in the project. Trust is for the file as it is now; if it
  * changes, vigent asks again.
+ *
+ * The same `:trust` trusts the repository itself (its absolute path, in the
+ * same store), which lets agent CLIs run there (src/workspace.ts). That lasts
+ * until `vigent trust --revoke`.
  */
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
@@ -18,6 +22,8 @@ import { type Config, loadConfig, PROJECT_CONFIG } from "./config.js";
 import { type EngineId, quickEngines } from "./engines.js";
 import { KEY_MODES } from "./keys.js";
 import { parse as parseToml } from "smol-toml";
+import { setProbeDir, type Workspace } from "./workspace.js";
+import { configDir } from "./theme.js";
 
 function stateFile(): string {
 	const xdg = process.env.XDG_STATE_HOME;
@@ -40,13 +46,73 @@ export function isTrusted(file: string, content: string): boolean {
 	return read()[path.resolve(file)] === digest(content);
 }
 
+function write(all: Record<string, string>): void {
+	const f = stateFile();
+	fs.mkdirSync(path.dirname(f), { recursive: true });
+	fs.writeFileSync(f, `${JSON.stringify(all, null, 2)}\n`);
+}
+
 /** Trust this file as it is now. */
 export function trustFile(file: string, content: string): void {
 	const all = read();
 	all[path.resolve(file)] = digest(content);
-	const f = stateFile();
-	fs.mkdirSync(path.dirname(f), { recursive: true });
-	fs.writeFileSync(f, `${JSON.stringify(all, null, 2)}\n`);
+	write(all);
+}
+
+/** A trusted repository's entry in the store (a file's is its sha256). */
+const REPOSITORY = "repository";
+
+const same = (a: string, b: string) => {
+	if (path.resolve(a) === path.resolve(b)) return true;
+	try {
+		return fs.realpathSync(a) === fs.realpathSync(b);
+	} catch {
+		return false;
+	}
+};
+
+/** Your own folders are never a repository to trust: your home folder and your config folders. */
+function yours(dir: string): boolean {
+	const home = os.homedir();
+	const xdg = process.env.XDG_CONFIG_HOME;
+	const config = xdg && xdg.length > 0 ? xdg : path.join(home, ".config");
+	return [home, config, configDir()].some((d) => same(dir, d));
+}
+
+/** Whether agent CLIs may run in this repository (or folder, outside one). */
+export function isRepoTrusted(dir: string): boolean {
+	return yours(dir) || read()[path.resolve(dir)] === REPOSITORY;
+}
+
+/** Trust this repository: its agent CLIs may run, until revoked. Returns whether it wasn't trusted before. */
+export function trustRepo(dir: string): boolean {
+	if (isRepoTrusted(dir)) return false;
+	const all = read();
+	all[path.resolve(dir)] = REPOSITORY;
+	write(all);
+	return true;
+}
+
+/** Forget a repository's trust, and its .vigent.toml's. Returns whether either was trusted. */
+export function revokeRepo(dir: string): boolean {
+	const all = read();
+	const keys = [path.resolve(dir), path.join(path.resolve(dir), PROJECT_CONFIG)].filter((k) => k in all);
+	for (const k of keys) delete all[k];
+	if (keys.length) write(all);
+	return keys.length > 0;
+}
+
+/** Everything trusted: repositories, and .vigent.toml files (as they were when trusted). */
+export function trustedEntries(): { path: string; kind: "repository" | "file" }[] {
+	return Object.entries(read())
+		.map(([p, v]) => ({ path: p, kind: v === REPOSITORY ? ("repository" as const) : ("file" as const) }))
+		.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+}
+
+/** Where you stand when vigent starts in `cwd`: the repository (or this folder, outside one), and whether it's trusted. */
+export function workspaceAt(cwd: string, root: string | undefined): Workspace {
+	const dir = path.resolve(root ?? cwd);
+	return { dir, repo: Boolean(root), trusted: isRepoTrusted(dir) };
 }
 
 export interface TrustSyncContext {
@@ -133,4 +199,28 @@ export function executeProjectTrust(ctx: TrustSyncContext): string {
 		.catch(() => {});
 
 	return `trusted ${PROJECT_CONFIG}${gated.length ? `: ${gated.join(", ")} now run` : ""}`;
+}
+
+/**
+ * `:trust`: trust the repository, so its agent CLIs may run (agents that waited
+ * for it start), and its .vigent.toml as it is now, if it has one. With
+ * nothing left to trust, it says the repository is trusted.
+ */
+export function executeTrust(ctx: TrustSyncContext & { workspace: Workspace }): string {
+	const { app, workspace, projectFile } = ctx;
+	const kind = workspace.repo ? "repository" : "folder";
+	let newly: boolean;
+	try {
+		newly = trustRepo(workspace.dir);
+	} catch (err) {
+		return `can't trust this ${kind}: ${(err as Error).message}`;
+	}
+	workspace.trusted = true;
+	// the engines' own commands may run here now
+	setProbeDir(undefined);
+	const file = projectFile && fs.existsSync(projectFile) ? executeProjectTrust(ctx) : undefined;
+	// the agents that waited go once the file's arguments and hooks are in place
+	app.releaseTrustHolds();
+	if (!newly) return file ?? `this ${kind} is trusted`;
+	return file ? `trusted this ${kind} · ${file}` : `trusted this ${kind}`;
 }

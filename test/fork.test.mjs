@@ -11,6 +11,7 @@ import { after, test } from "node:test";
 import { loadAgentMeta } from "../dist/agents.js";
 import { CliSession, claudeAdapter, codexAdapter, lastClaudeMessage } from "../dist/cli-engines.js";
 import { Tty } from "./support/terminal.mjs";
+import { trustRepo } from "./support/trust.mjs";
 
 const skip = process.platform === "win32" || spawnSync("python3", ["-c", "import pty"]).status !== 0 ? "needs python3 and a Unix pty" : false;
 const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "vigent-fork-")));
@@ -142,6 +143,8 @@ say({ type: "result", subtype: "success", session_id: id, is_error: false, resul
 	git("commit", "-qm", "init");
 
 	const calls = () => fs.readFileSync(log, "utf8").trim().split("\n").map(JSON.parse);
+	// vigent starts agent CLIs only in a repository you've trusted
+	trustRepo(repo, env);
 	const t = new Tty([], { cwd: repo, env });
 	try {
 		await t.waitFor(/● Claude Code +default/);

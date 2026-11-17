@@ -52,6 +52,22 @@ pub struct RunResult {
     pub stderr: String,
 }
 
+static PROBE_DIR: std::sync::RwLock<Option<PathBuf>> = std::sync::RwLock::new(None);
+
+/// Where vigent runs engine commands of its own (`claude auth status`, `pi
+/// --list-models`, `opencode models`, ...): None is the current folder, as
+/// before; while the repository isn't trusted, a neutral folder, so none of
+/// them loads the repository's settings (src/workspace.ts setProbeDir).
+pub fn set_probe_dir(dir: Option<PathBuf>) {
+    if let Ok(mut d) = PROBE_DIR.write() {
+        *d = dir;
+    }
+}
+
+pub fn probe_dir() -> Option<PathBuf> {
+    PROBE_DIR.read().ok().and_then(|d| d.clone())
+}
+
 /// Run a command with a timeout and exactly `env`; never fails.
 /// Start `c`, trying again for a moment while the program is "text file busy"
 /// (ETXTBSY): a process forked while the file was still open for writing (a
@@ -74,6 +90,10 @@ pub fn run(cmd: &str, args: &[&str], timeout_ms: u64, env: &Env) -> RunResult {
     let Some(program) = program else { return RunResult::default() };
     let mut c = Command::new(program);
     c.args(args).env_clear().envs(env).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    // outside a repository you haven't trusted: a CLI's status and model commands read its settings too
+    if let Some(dir) = probe_dir() {
+        c.current_dir(dir);
+    }
     let Some(mut child) = spawn(&mut c) else { return RunResult::default() };
     let mut out = child.stdout.take().expect("piped");
     let mut err = child.stderr.take().expect("piped");

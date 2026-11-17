@@ -95,6 +95,11 @@ pub fn lines(app: &App, pane_w: usize, pane_h: usize) -> Vec<PaneLine> {
         let note = "(not a git repository: agents will share this folder)";
         add(&mut rows, vec![Seg::new(note, t.hl("WarningMsg"))], center(note));
     }
+    if let Some(w) = app.agents.workspace.as_ref().filter(|w| !w.trusted && !app.serve.demo) {
+        add(&mut rows, vec![], String::new());
+        let note = crate::trust::untrusted_note(w);
+        add(&mut rows, vec![Seg::new(note.clone(), t.hl("WarningMsg"))], center(&note));
+    }
     let top = pane_h.saturating_sub(rows.len()) / 2;
     let mut out: Vec<PaneLine> = vec![];
     for r in rows {

@@ -11,6 +11,7 @@ import { Keymap } from "../dist/keys.js";
 import { codexOption, flagValue, withCodexOption, withFlag, withSwitch } from "../dist/permissions.js";
 import { BUILTIN_THEMES, Painter } from "../dist/theme.js";
 import { Tty } from "./support/terminal.mjs";
+import { trustRepo } from "./support/trust.mjs";
 
 const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "vigent-perms-")));
 after(() => fs.rmSync(tmp, { recursive: true, force: true }));
@@ -130,6 +131,8 @@ test("two vigents open at once: a permission changed in one isn't undone by the 
 		fs.writeFileSync(path.join(dir, "README.md"), "# x\n");
 		execFileSync("git", ["add", "."], { cwd: dir });
 		execFileSync("git", ["-c", "user.email=a@b", "-c", "user.name=t", "commit", "-qm", "init"], { cwd: dir });
+		// vigent starts agent CLIs only in a repository you've trusted
+		trustRepo(dir, env);
 		return dir;
 	};
 	const xdg = path.join(home, "xdg");
