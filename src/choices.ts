@@ -8,6 +8,7 @@ import { execFile } from "node:child_process";
 import { probeCwd } from "./workspace.js";
 import { CUSTOM_ENGINES, ENGINE_BINS, ENGINE_NAMES, type EngineId } from "./engines.js";
 import { piModels } from "./pi-cli.js";
+import { oneLine } from "./printable.js";
 
 export interface Choice {
 	value: string;
@@ -187,11 +188,12 @@ export function parseCodexModels(json: string): CodexModel[] {
 	try {
 		const models: any[] = JSON.parse(json)?.models ?? [];
 		return models
-			.filter((m) => m && typeof m.slug === "string" && (m.visibility === undefined || m.visibility === "list"))
+			.filter((m) => m && typeof m.slug === "string" && oneLine(m.slug) && (m.visibility === undefined || m.visibility === "list"))
 			.map((m) => ({
-				slug: m.slug,
-				name: typeof m.display_name === "string" ? m.display_name : m.slug,
-				description: typeof m.description === "string" ? m.description : undefined,
+				// names as Codex gives them, with nothing a terminal would act on
+				slug: oneLine(m.slug),
+				name: oneLine(typeof m.display_name === "string" ? m.display_name : m.slug) || oneLine(m.slug),
+				description: typeof m.description === "string" ? oneLine(m.description) : undefined,
 				efforts: Array.isArray(m.supported_reasoning_levels)
 					? m.supported_reasoning_levels.map((l: any) => (typeof l === "string" ? l : l?.effort)).filter((e: unknown) => typeof e === "string")
 					: [],

@@ -547,6 +547,9 @@ pub fn ask_to_allow(app: &mut App, i: usize) {
         }
     }));
     p.rows = 3;
+    // the notes are cut to the picker's width: what was blocked and every rule show in full above them
+    p.details = ask.details.clone();
+    p.detail_rows = (crate::review::screen().1 as usize).saturating_sub(12).max(4);
     open_picker(app, p);
 }
 
@@ -867,6 +870,41 @@ mod tests {
         a.sessions[0].state = crate::session::State::Waiting;
         a.key(crossterm::event::KeyEvent::new(crossterm::event::KeyCode::Char('q'), crossterm::event::KeyModifiers::NONE));
         assert_eq!(a.sessions[0].items.last(), Some(&crate::session::Item::Info("left blocked".into())));
+    }
+
+    #[test]
+    fn the_permission_prompt_shows_every_rule_always_allow_saves() {
+        use crate::engines::permissions::tests::{HOSTILE_COMMAND, HOSTILE_PROGRAMS};
+        let mut a = app();
+        let mut s = Session::new(0, "pr", "claude", "/nope".into());
+        s.launch.ask = true;
+        s.state = crate::session::State::Running;
+        s.apply(vec![super::super::Ev::Denied(vec![super::super::permissions::denial("Bash", serde_json::json!({"command": HOSTILE_COMMAND}))])], true);
+        a.sessions.push(s);
+        a.focus = 0;
+        ask_to_allow(&mut a, 0);
+        let p = a.windows.picker.as_mut().unwrap();
+        // a short terminal: the details don't fit, and scroll
+        p.detail_rows = 4;
+        let mut shown = std::collections::BTreeSet::new();
+        let mut screen = String::new();
+        for _ in 0..20 {
+            screen = p.lines(76, &a.theme, "unicode").iter().map(|l| l.spans.iter().map(|s| s.content.to_string()).collect::<String>()).collect::<Vec<_>>().join("\n");
+            assert!(!screen.chars().any(|c| c != '\n' && c.is_control()), "{screen:?}");
+            let mut rest = screen.as_str();
+            while let Some(at) = rest.find("Bash(") {
+                let end = rest[at..].find(')').map_or(rest.len(), |e| at + e + 1);
+                shown.insert(rest[at..end].to_string());
+                rest = &rest[end..];
+            }
+            crate::ui::picker::feed(p, "<C-e>");
+        }
+        let rules: std::collections::BTreeSet<String> = HOSTILE_PROGRAMS.iter().map(|p| format!("Bash({p}:*)")).collect();
+        let notes: std::collections::BTreeSet<String> = shown.iter().filter(|r| r.ends_with(":*)")).cloned().collect();
+        assert!(notes.is_superset(&rules), "missing {:?}", rules.difference(&notes).collect::<Vec<_>>());
+        assert!(notes.is_subset(&rules), "no junk rule: {notes:?}");
+        assert!(screen.contains("Ctrl-d/Ctrl-u scroll"));
+        assert_eq!(p.height(76), 3 + 4 + 4 + 1);
     }
 
     #[test]

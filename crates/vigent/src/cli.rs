@@ -241,7 +241,7 @@ fn start(args: Vec<String>) -> i32 {
     }
     let cwd = std::env::current_dir().unwrap_or_default();
     let root = worktree::repo_root(&cwd);
-    let config::Loaded { config, mut warnings, .. } = config::load_all(root.as_deref());
+    let config::Loaded { mut config, mut warnings, .. } = config::load_all(root.as_deref());
     let (keymap, key_warnings) = keys::build_keymap(config.leader.as_deref(), &config.keys);
     warnings.extend(key_warnings);
     // engines of your own ([engines.<id>] command = [...]) are known everywhere engines are listed
@@ -266,6 +266,12 @@ fn start(args: Vec<String>) -> i32 {
             theme::load_def("default").expect("the default theme")
         }
     };
+    // the project's theme, as it's shown (theme = "nvim" follows your editor's)
+    if opts.theme.is_none()
+        && let Some(t) = config.project_settings.iter_mut().find(|(k, _)| k == "theme")
+    {
+        t.1 = crate::config_edit::toml_str(&theme_def.name);
+    }
     crate::tui::run(VERSION, cwd, theme_def, &theme_name, config, keymap, warnings, &opts)
 }
 

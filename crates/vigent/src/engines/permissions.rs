@@ -8,6 +8,7 @@ use serde_json::Value;
 
 use super::Denial;
 use super::common::{js_string, summarize};
+use crate::printable::{escape_controls, without_escapes};
 
 /// The value after `flag` (`--permission-mode plan`, or `--permission-mode=plan`).
 pub fn flag_value(args: &[String], flag: &str) -> Option<String> {
@@ -45,15 +46,33 @@ pub fn interactive_note(engine: &str, d: &Denial) -> String {
     format!("{engine} wanted to ask you{what} · answer with i")
 }
 
-/// A refused tool call, short: the command for Bash, the tool name and its target otherwise.
-pub fn describe_denial(d: &Denial) -> String {
+/// A refused tool call on one line, at most `max` characters: the command
+/// for Bash, the tool name and its target otherwise. What a terminal would act
+/// on is written out (\x1b), so it shows what the command holds.
+pub fn describe_denial(d: &Denial, max: usize) -> String {
+    let line = |s: &str| escape_controls(s).split_whitespace().collect::<Vec<_>>().join(" ").chars().take(max).collect();
     if d.name == "Bash"
         && let Some(c) = d.input["command"].as_str()
     {
-        return c.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(80).collect();
+        return line(c);
     }
     let s = summarize(&d.input);
-    if s.is_empty() { d.name.clone() } else { format!("{} {s}", d.name).chars().take(80).collect() }
+    if s.is_empty() { line(&d.name) } else { line(&format!("{} {s}", d.name)) }
+}
+
+/// What the permission prompt shows above its choices, in full: each refused
+/// call, and the rules that allowing it (once, or always) adds (TS allowDetails).
+pub fn allow_details(blocked: &[Denial], rules: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = vec![];
+    for d in blocked {
+        let w = format!("blocked: {}", describe_denial(d, usize::MAX));
+        if !out.contains(&w) {
+            out.push(w);
+        }
+    }
+    let n = if rules.len() == 1 { "rule".to_string() } else { format!("{} rules", rules.len()) };
+    out.push(format!("{n}: {}", rules.join(" ")));
+    out
 }
 
 const SHELL_KEYWORDS: [&str; 23] = ["for", "in", "do", "done", "while", "until", "if", "then", "elif", "else", "fi", "case", "esac", "select", "function", "time", "!", "{", "}", "[[", "]]", "[", "]"];
@@ -158,7 +177,8 @@ fn blank_redirections(s: &str) -> String {
 /// The programs a shell command runs: each command of a pipeline, list, loop
 /// body or `$(...)`, without shell keywords and `VAR=value` prefixes.
 pub fn command_programs(command: &str) -> Vec<String> {
-    let text = blank_redirections(&blank_quotes(command));
+    // an escape sequence's ; isn't a command boundary
+    let text = blank_redirections(&blank_quotes(&without_escapes(command)));
     // split on $( ` && || ; | & \n ( )
     let mut segments = vec![];
     let mut cur = String::new();
@@ -205,16 +225,29 @@ pub fn command_programs(command: &str) -> Vec<String> {
     out
 }
 
+/// A program a rule can name: a word or path. Not `*`, `?`, `[` or `{`, which
+/// Claude Code reads as wildcards (`Bash(*:*)` allows every command), nor `:`
+/// or `)`, which end the rule's program early (TS ruleProgram).
+pub fn rule_program(word: &str) -> bool {
+    let mut chars = word.chars();
+    let Some(first) = chars.next() else { return false };
+    let ok = |c: char| c.is_ascii_alphanumeric() || "_./~".contains(c);
+    ok(first) && chars.all(|c| ok(c) || "+@%,-".contains(c))
+}
+
 /// The Claude Code permission rules that allow a refused call: `Bash(gh:*)`
-/// for each program a command runs, the tool's name otherwise.
+/// for each program a command runs, the tool's name otherwise. None when a
+/// rule would allow more than the call: a command whose programs can't all be
+/// told, or one named with characters a rule reads as wildcards (bare `Bash`
+/// allows every command).
 pub fn allow_rules(d: &Denial) -> Vec<String> {
     if d.name == "Bash"
         && let Some(c) = d.input["command"].as_str()
     {
         let progs = command_programs(c);
-        return if progs.is_empty() { vec!["Bash".into()] } else { progs.iter().map(|p| format!("Bash({p}:*)")).collect() };
+        return if !progs.is_empty() && progs.iter().all(|p| rule_program(p)) { progs.iter().map(|p| format!("Bash({p}:*)")).collect() } else { vec![] };
     }
-    vec![d.name.clone()]
+    if rule_program(&d.name) { vec![d.name.clone()] } else { vec![] }
 }
 
 /// What to ask when [engines.claude] ask is on: allow these rules once, always, or not.
@@ -226,6 +259,8 @@ pub struct Ask {
     pub missing: Vec<String>,
     /// every rule that would allow what was refused (the retry names them)
     pub rules: Vec<String>,
+    /// what the prompt shows in full above its choices (allow_details)
+    pub details: Vec<String>,
 }
 
 /// What the transcript says when the CLI refused some tools, and what to ask
@@ -241,7 +276,7 @@ pub fn blocked(engine: &str, engine_name: &str, all: &[Denial], allowed: &[Strin
     let mut what: Vec<String> = vec![];
     let mut rules: Vec<String> = vec![];
     for d in &denied {
-        let w = describe_denial(d);
+        let w = describe_denial(d, 80);
         if !what.contains(&w) {
             what.push(w);
         }
@@ -251,8 +286,10 @@ pub fn blocked(engine: &str, engine_name: &str, all: &[Denial], allowed: &[Strin
             }
         }
     }
-    let missing = rules.iter().filter(|r| !allowed.contains(r)).cloned().collect();
-    (notes, Some(Ask { what: what.join(" · "), missing, rules }))
+    let missing: Vec<String> = rules.iter().filter(|r| !allowed.contains(r)).cloned().collect();
+    let refused: Vec<Denial> = denied.iter().map(|d| (*d).clone()).collect();
+    let details = allow_details(&refused, &missing);
+    (notes, Some(Ask { what: what.join(" · "), missing, rules, details }))
 }
 
 /// What the transcript says when the CLI refused some tools (TS CliSession.blocked, not asking).
@@ -274,7 +311,7 @@ pub fn blocked_notes(engine: &str, engine_name: &str, all: &[Denial], allowed: &
     let mut what: Vec<String> = vec![];
     let mut rules: Vec<String> = vec![];
     for d in &denied {
-        let w = relative(&describe_denial(d));
+        let w = relative(&describe_denial(d, 80));
         if !what.contains(&w) {
             what.push(w);
         }
@@ -287,6 +324,22 @@ pub fn blocked_notes(engine: &str, engine_name: &str, all: &[Denial], allowed: &
     notes.push(format!("blocked by {engine_name}'s permissions: {}", what.join(" · ")));
     if engine != "claude" {
         return notes;
+    }
+    let mut unruled: Vec<String> = vec![];
+    for d in denied.iter().filter(|d| allow_rules(d).is_empty()) {
+        let w = relative(&describe_denial(d, 80));
+        if !unruled.contains(&w) {
+            unruled.push(w);
+        }
+    }
+    if !unruled.is_empty() {
+        notes.push(format!(
+            "no rule allows only {}: vigent can't tell every program it runs, or one is named with *, ?, [ or {{, which a rule reads as a wildcard. Run that part yourself, or ask the agent for another way.",
+            unruled.join(" · ")
+        ));
+        if rules.is_empty() {
+            return notes;
+        }
     }
     if permission_mode == "bypassPermissions" {
         notes.push(format!(
@@ -317,7 +370,7 @@ pub fn denial(name: &str, input: Value) -> Denial {
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use super::*;
     use serde_json::json;
 
@@ -338,8 +391,8 @@ mod tests {
             assert_eq!(command_programs(cmd), progs, "{cmd}");
         }
         assert_eq!(allow_rules(&denial("Bash", json!({"command": "for id in 1 2; do gh run view $id | jq .x; done"}))), ["Bash(gh:*)", "Bash(jq:*)"]);
-        assert_eq!(describe_denial(&denial("Bash", json!({"command": "gh  pr\nview 12"}))), "gh pr view 12");
-        assert_eq!(describe_denial(&denial("WebFetch", json!({"url": "https://x.dev"}))), "WebFetch https://x.dev");
+        assert_eq!(describe_denial(&denial("Bash", json!({"command": "gh  pr\nview 12"})), 80), "gh pr view 12");
+        assert_eq!(describe_denial(&denial("WebFetch", json!({"url": "https://x.dev"})), 80), "WebFetch https://x.dev");
     }
 
     #[test]
@@ -355,9 +408,48 @@ mod tests {
         assert_eq!(blocked_notes("claude", "Claude Code", &q, &[], "default", &id), ["Claude Code wanted to ask you: Which? (A / B) · answer with i"]);
         let (n, ask) = blocked("claude", "Claude Code", &d, &[], "acceptEdits", true, &id);
         assert_eq!(n, ["blocked by Claude Code's permissions: gh pr view 12"]);
-        assert_eq!(ask, Some(Ask { what: "gh pr view 12".into(), missing: vec!["Bash(gh:*)".into()], rules: vec!["Bash(gh:*)".into()] }));
+        assert_eq!(
+            ask,
+            Some(Ask { what: "gh pr view 12".into(), missing: vec!["Bash(gh:*)".into()], rules: vec!["Bash(gh:*)".into()], details: vec!["blocked: gh pr view 12".into(), "rule: Bash(gh:*)".into()] })
+        );
         assert_eq!(blocked("codex", "Codex", &d, &[], "", true, &id).1, None, "only Claude Code is asked about");
         assert_eq!(flag_value(&["--permission-mode".into(), "plan".into()], "--permission-mode").as_deref(), Some("plan"));
         assert_eq!(flag_value(&["--permission-mode=plan".into()], "--permission-mode").as_deref(), Some("plan"));
+    }
+
+    /// the security review's command: escapes and a title in it, and more programs than a note can show
+    pub const HOSTILE_COMMAND: &str = "npm test \x1b]52;c;UEVSTQ==\x07\x1b]0;PERMTITLE\x07\x1b[2J && echo ok && true && ls && cat x && pwd && date && whoami && id && uname && env && printf x && python3 -c 1";
+    pub const HOSTILE_PROGRAMS: [&str; 13] = ["npm", "echo", "true", "ls", "cat", "pwd", "date", "whoami", "id", "uname", "env", "printf", "python3"];
+
+    #[test]
+    fn a_refused_command_with_escapes_is_shown_written_out_and_its_rules_computed_without_them() {
+        let d = denial("Bash", json!({"command": HOSTILE_COMMAND}));
+        assert!(describe_denial(&d, 80).starts_with("npm test \\x1b]52;c;UEVSTQ==\\x07\\x1b]0;PERMTITLE\\x07\\x1b[2J && echo ok"));
+        assert_eq!(describe_denial(&d, 80).chars().count(), 80, "the title stays short");
+        assert!(describe_denial(&d, usize::MAX).ends_with("python3 -c 1"));
+        assert!(!describe_denial(&d, usize::MAX).chars().any(|c| c.is_control()));
+        assert_eq!(command_programs(HOSTILE_COMMAND), HOSTILE_PROGRAMS);
+        assert_eq!(describe_denial(&denial("Web\x1b]0;x\x07Fetch", json!({"url": "https://x.dev"})), 80), "Web\\x1b]0;x\\x07Fetch https://x.dev");
+        assert_eq!(allow_details(&[denial("Bash", json!({"command": "gh pr view 12"}))], &["Bash(gh:*)".into()]), ["blocked: gh pr view 12", "rule: Bash(gh:*)"]);
+    }
+
+    #[test]
+    fn no_rule_for_a_wildcard_program_nor_a_bare_bash() {
+        for w in ["*", "", "?", "a*", "[ab]", "{a,b}", "x:y", "a)b", "-rf", "e\u{9b}"] {
+            assert!(!rule_program(w), "{w:?}");
+        }
+        for w in ["gh", "./scripts/test.sh", "/usr/bin/env", "~/bin/x", "python3.12", "g++", "mcp__github__get_me"] {
+            assert!(rule_program(w), "{w}");
+        }
+        let rules = |c: &str| allow_rules(&denial("Bash", json!({"command": c})));
+        assert!(rules("* -rf /").is_empty(), "Claude Code reads Bash(*:*) as every command");
+        assert!(rules("ls && ?? x").is_empty());
+        assert!(rules("$X").is_empty());
+        assert!(rules("   ").is_empty(), "a bare Bash would allow every command");
+        assert!(allow_rules(&denial("Web*", json!({}))).is_empty());
+        let id = |s: &str| s.to_string();
+        let (n, ask) = blocked("claude", "Claude Code", &[denial("Bash", json!({"command": "* -rf /"}))], &[], "acceptEdits", true, &id);
+        assert_eq!(ask, None, "nothing to ask about");
+        assert!(n[1].starts_with("no rule allows only * -rf /: vigent can't tell"), "{n:?}");
     }
 }

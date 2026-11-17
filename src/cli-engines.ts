@@ -16,6 +16,7 @@ import { expandPrompt } from "./attach.js";
 import { CUSTOM_ENGINES, type CustomEngine, ENGINE_BINS, ENGINE_NAMES, type EngineId } from "./engines.js";
 import { LineSplitter } from "./lines.js";
 import { flagValue } from "./permissions.js";
+import { escapeControls, oneLine, withoutEscapes } from "./printable.js";
 import { Session, type TranscriptItem } from "./session.js";
 import type { WorktreeInfo } from "./worktree.js";
 
@@ -798,7 +799,8 @@ export class CliSession extends Session {
 					this.lastMessageId = ev.id;
 					break;
 				case "model":
-					if (!this.requestedModel) this.model = ev.model;
+					// the CLI's name for it, drawn in the winbar, statusline and sidebar
+					if (!this.requestedModel) this.model = oneLine(ev.model) || this.model;
 					this.emit();
 					break;
 				case "text_delta": {
@@ -974,6 +976,13 @@ export class CliSession extends Session {
 		const rules = [...new Set(denied.flatMap(allowRules))];
 		this.pushInfo(`blocked by ${this.engineName}'s permissions: ${what.join(" · ")}`);
 		if (this.engine !== "claude") return false;
+		const unruled = [...new Set(denied.filter((d) => !allowRules(d).length).map((d) => this.relative(describeDenial(d))))];
+		if (unruled.length) {
+			this.pushInfo(
+				`no rule allows only ${unruled.join(" · ")}: vigent can't tell every program it runs, or one is named with *, ?, [ or {, which a rule reads as a wildcard. Run that part yourself, or ask the agent for another way.`,
+			);
+			if (!rules.length) return false;
+		}
 		if (this.permissionMode() === "bypassPermissions") {
 			this.pushInfo(
 				`${this.engineName} refused this even with bypassPermissions: it asks before a few things whatever the mode (writing in .git or .claude, for one), and it can't ask here. Do that part yourself, or ask the agent for another way.`,
@@ -1105,11 +1114,26 @@ export function interactiveNote(engine: string, d: Denial): string {
 	return `${engine} wanted to ask you${asked.length ? `: ${asked.join(" · ")}` : " something"} · answer with i`;
 }
 
-/** A refused tool call, short: the command for Bash, the tool name and its target otherwise. */
-export function describeDenial(d: Denial): string {
-	if (d.name === "Bash" && typeof d.input?.command === "string") return d.input.command.replace(/\s+/g, " ").trim().slice(0, 80);
+/**
+ * A refused tool call on one line, at most `max` characters: the command for
+ * Bash, the tool name and its target otherwise. What a terminal would act on
+ * is written out (\x1b), so it shows what the command holds and can't redraw
+ * the prompt that asks about it.
+ */
+export function describeDenial(d: Denial, max = 80): string {
+	const line = (s: string) => escapeControls(s).replace(/\s+/g, " ").trim().slice(0, max);
+	if (d.name === "Bash" && typeof d.input?.command === "string") return line(d.input.command);
 	const s = summarize(d.input);
-	return s ? `${d.name} ${s}`.slice(0, 80) : d.name;
+	return s ? line(`${d.name} ${s}`) : line(d.name);
+}
+
+/**
+ * What the permission prompt shows above its choices, in full: each refused
+ * call, and the rules that allowing it (once, or always) adds.
+ */
+export function allowDetails(blocked: Denial[], rules: string[]): string[] {
+	const what = [...new Set(blocked.map((d) => describeDenial(d, Infinity)))];
+	return [...what.map((w) => `blocked: ${w}`), `${rules.length === 1 ? "rule" : `${rules.length} rules`}: ${rules.join(" ")}`];
 }
 
 /** Shell words that aren't programs: loops, conditionals, and what only introduces a command. */
@@ -1121,8 +1145,8 @@ const SHELL_KEYWORDS = new Set(["for", "in", "do", "done", "while", "until", "if
  * prefixes. `for id in 1 2; do gh run view $id | jq .x; done` runs gh and jq.
  */
 export function commandPrograms(command: string): string[] {
-	// quoted text is an argument, never a command boundary
-	const text = command
+	// an escape sequence's ; isn't a command boundary; quoted text is an argument, never one
+	const text = withoutEscapes(command)
 		.replace(/'[^']*'|"(?:\\.|[^"\\])*"/g, " _ ")
 		// redirections (2>&1, &>, >>) aren't command boundaries either
 		.replace(/\d*>&\d*|&>>?|\d*>>?|<<?/g, " ");
@@ -1142,21 +1166,32 @@ export function commandPrograms(command: string): string[] {
 }
 
 /**
+ * A program a rule can name: a word or path. Not `*`, `?`, `[` or `{`, which
+ * Claude Code reads as wildcards (`Bash(*:*)` allows every command), nor `:`
+ * or `)`, which end the rule's program early.
+ */
+export function ruleProgram(word: string): boolean {
+	return /^[A-Za-z0-9_.\/~][A-Za-z0-9_.\/~+@%,-]*$/.test(word);
+}
+
+/**
  * The Claude Code permission rules that allow a refused call: `Bash(gh:*)`
  * for each program a command runs (any arguments), the tool's name otherwise.
  * Claude Code checks every command of a pipeline, list or loop on its own,
- * so `gh … | jq …` needs both.
+ * so `gh … | jq …` needs both. None when a rule would allow more than the
+ * call: a command whose programs can't all be told, or one named with
+ * characters a rule reads as wildcards (bare `Bash` allows every command).
  */
 export function allowRules(d: Denial): string[] {
 	if (d.name === "Bash" && typeof d.input?.command === "string") {
 		const progs = commandPrograms(d.input.command);
-		return progs.length ? progs.map((p) => `Bash(${p}:*)`) : ["Bash"];
+		return progs.length && progs.every(ruleProgram) ? progs.map((p) => `Bash(${p}:*)`) : [];
 	}
-	return [d.name];
+	return ruleProgram(d.name) ? [d.name] : [];
 }
 
 /** The first of allowRules (kept for callers that want one). */
-export function allowRule(d: Denial): string {
+export function allowRule(d: Denial): string | undefined {
 	return allowRules(d)[0];
 }
 

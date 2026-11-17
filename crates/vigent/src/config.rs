@@ -158,11 +158,13 @@ pub struct WorktreeConfig {
     pub base: Option<String>,
     /// "auto", "riftri", "git"
     pub backend: String,
+    /// `dir` came from a project's .vigent.toml you haven't trusted: it must stay beside the repository
+    pub dir_from_project: bool,
 }
 
 impl Default for WorktreeConfig {
     fn default() -> Self {
-        WorktreeConfig { enabled: true, dir: "../{repo}-worktrees".into(), branch: "{type}/{name}".into(), base: None, backend: "auto".into() }
+        WorktreeConfig { enabled: true, dir: "../{repo}-worktrees".into(), branch: "{type}/{name}".into(), base: None, backend: "auto".into(), dir_from_project: false }
     }
 }
 
@@ -177,6 +179,8 @@ pub struct Template {
     pub effort: Option<String>,
     /// false: run in your checkout instead of a new worktree
     pub worktree: Option<bool>,
+    /// from the project's .vigent.toml
+    pub project: bool,
 }
 
 /// [hooks]
@@ -255,6 +259,58 @@ pub struct Config {
     /// what each command does (its description), and which wait for :trust
     pub command_info: Vec<(String, CommandInfo)>,
     pub style: StyleSpec,
+    /// what the project's .vigent.toml set over your config.toml, as settings_values has it:
+    /// :settings never saves these as they are
+    pub project_settings: Vec<(String, String)>,
+}
+
+/// What :settings saves: each value as TOML, by "section.key" ("theme", "ui.sidebar", ...)
+/// (src/config.ts settingsValues).
+pub fn settings_values(theme: Option<&str>, engine: Option<&str>, leader: Option<&str>, ui: &UiOptions, style: &StyleSpec, wt: &WorktreeConfig) -> Vec<(String, String)> {
+    use crate::config_edit::toml_str;
+    let mut out = vec![];
+    if let Some(t) = theme {
+        out.push(("theme".to_string(), toml_str(t)));
+    }
+    out.push(("engine".into(), toml_str(engine.unwrap_or("auto"))));
+    out.push(("leader".into(), toml_str(&crate::keys::leader_or_default(leader))));
+    let transparent = match ui.transparent {
+        Transparent::Auto => toml_str("auto"),
+        Transparent::On => "true".into(),
+        Transparent::Off => "false".into(),
+    };
+    for (k, v) in [
+        ("sidebar", ui.sidebar.to_string()),
+        ("sidebar_width", ui.sidebar_width.to_string()),
+        ("sidebar_position", toml_str(&ui.sidebar_position)),
+        ("number", ui.number.to_string()),
+        ("tilde", ui.tilde.to_string()),
+        ("icons", toml_str(&ui.icons)),
+        ("termguicolors", ui.termguicolors.to_string()),
+        ("transparent", transparent),
+        ("whichkey", ui.whichkey.to_string()),
+        ("notify", toml_str(&ui.notify)),
+    ] {
+        out.push((format!("ui.{k}"), v));
+    }
+    for (k, v) in [("sidebar", &style.sidebar), ("messages", &style.messages), ("separators", &style.separators)] {
+        if let Some(v) = v.as_deref().filter(|v| !v.is_empty()) {
+            out.push((format!("style.{k}"), toml_str(v)));
+        }
+    }
+    out.push(("worktree.enabled".into(), wt.enabled.to_string()));
+    out.push(("worktree.backend".into(), toml_str(&wt.backend)));
+    out
+}
+
+/// settings_values for a config as loaded.
+pub fn config_settings(c: &Config) -> Vec<(String, String)> {
+    settings_values(c.theme.as_deref(), c.engine.as_deref(), c.leader.as_deref(), &c.ui, &c.style, &c.worktree)
+}
+
+/// The settings `after` has that `before` didn't: what a project's .vigent.toml set over your config.toml.
+pub fn settings_changed(before: &[(String, String)], after: &[(String, String)]) -> Vec<(String, String)> {
+    after.iter().filter(|(k, v)| !before.iter().any(|(bk, bv)| bk == k && bv == v)).cloned().collect()
 }
 
 impl Config {
@@ -335,8 +391,11 @@ pub fn load_all(root: Option<&Path>) -> Loaded {
     if let Some(file) = root.map(|r| r.join(PROJECT_CONFIG)).filter(|f| f.exists()) {
         let content = std::fs::read_to_string(&file).unwrap_or_default();
         let trusted = is_trusted(&file, &content);
+        let mine = config_settings(&all.config);
         let project = load_str(&content, PROJECT_CONFIG, LoadOptions { base: Some(all.config), trusted, label: PROJECT_CONFIG });
         all.config = project.config;
+        // what the project set over yours: :settings saves those only once you change them
+        all.config.project_settings = settings_changed(&mine, &config_settings(&all.config));
         all.warnings.extend(project.warnings);
         if !project.gated.is_empty() {
             all.warnings.push(format!("{PROJECT_CONFIG} wants to run commands ({}): :trust allows them", project.gated.join(", ")));
@@ -381,7 +440,7 @@ pub fn load_str(text: &str, file_name: &str, opts: LoadOptions) -> Loaded {
                 }
             },
             "engines" => parse_engines(value, w, may_run, &mut config, &mut warnings, &mut gated),
-            "templates" => parse_templates(value, &mut config, &mut warnings),
+            "templates" => parse_templates(value, w == PROJECT_CONFIG, &mut config, &mut warnings),
             "style" => parse_style(value, w, &mut config.style, &mut warnings),
             "commands" => {
                 // from an untrusted file, a command waits for :trust if a step runs a shell command, or
@@ -455,8 +514,20 @@ pub fn load_str(text: &str, file_name: &str, opts: LoadOptions) -> Loaded {
                     continue;
                 };
                 for (opt, v) in t {
-                    if let Err(msg) = set_worktree_option(&mut config.worktree, opt, v) {
-                        warnings.push(format!("{w} [worktree]: {msg}"));
+                    // an untrusted project's dir stays beside the repository, out of dot-folders
+                    let why = match v.as_str() {
+                        Some(d) if opt == "dir" && !may_run && !d.trim().is_empty() => crate::worktree::project_worktree_dir_problem(d),
+                        _ => None,
+                    };
+                    if let Some(why) = why {
+                        let (dir, now) = (serde_json::to_string(v.as_str().unwrap_or_default()).unwrap_or_default(), serde_json::to_string(&config.worktree.dir).unwrap_or_default());
+                        warnings.push(format!("{w} [worktree]: 'dir' {dir} {why}; worktrees go in {now}"));
+                        continue;
+                    }
+                    match set_worktree_option(&mut config.worktree, opt, v) {
+                        Err(msg) => warnings.push(format!("{w} [worktree]: {msg}")),
+                        Ok(()) if opt == "dir" => config.worktree.dir_from_project = !may_run,
+                        Ok(()) => {}
                     }
                 }
             }
@@ -532,7 +603,8 @@ fn parse_engines(value: &Val, w: &str, may_run: bool, config: &mut Config, warni
         let at = format!("{w} [engines.{id}]");
         for (k, v) in table {
             let k = k.as_str();
-            if (k == "args" || k == "allow") && !may_run {
+            // ask = true offers "always allow", which writes rules into your config.toml
+            if (k == "args" || k == "allow" || (k == "ask" && *v == Val::Bool(true) && id == "claude")) && !may_run {
                 gated.push(format!("engines.{id}.{k}"));
                 continue;
             }
@@ -583,7 +655,7 @@ fn parse_custom_engine(id: &str, raw: &Val, at: &str, warnings: &mut Vec<String>
     Some(e)
 }
 
-fn parse_templates(value: &Val, config: &mut Config, warnings: &mut Vec<String>) {
+fn parse_templates(value: &Val, project: bool, config: &mut Config, warnings: &mut Vec<String>) {
     let Some(t) = value.as_table() else {
         warnings.push("config: [templates] should be a table".into());
         return;
@@ -627,6 +699,22 @@ fn parse_templates(value: &Val, config: &mut Config, warnings: &mut Vec<String>)
                 let list = if efforts.is_empty() { "none for this engine".to_string() } else { efforts.join(", ") };
                 warnings.push(format!("{at}: 'effort' should be one of {list}"));
                 tpl.effort = None;
+            }
+        }
+        // a project's template never stands in for a built-in or one of yours: :new -t review
+        // stays the review that changes nothing, and the project's is project-review
+        if project {
+            tpl.project = true;
+            let mine = config.templates.iter().any(|o| o.name == tpl.name && !o.project);
+            if mine || crate::agents::BUILTIN_TEMPLATES.iter().any(|b| b.0 == tpl.name) {
+                let renamed = format!("project-{}", tpl.name);
+                if config.templates.iter().any(|o| o.name == renamed && !o.project) {
+                    warnings.push(format!("{PROJECT_CONFIG} [templates.{name}]: left out: you have templates named '{name}' and '{renamed}'"));
+                    continue;
+                }
+                let who = if mine { "you have" } else { "vigent has" };
+                warnings.push(format!("{PROJECT_CONFIG} [templates.{name}]: {who} a '{name}' template, so this one is '{renamed}' (:new -t {renamed})"));
+                tpl.name = renamed;
             }
         }
         out.retain(|o| o.name != tpl.name);

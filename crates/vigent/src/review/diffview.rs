@@ -7,6 +7,7 @@
 //! Both return the line indices of hunk headers so ]c / [c can jump.
 
 use super::float::FLine;
+use crate::printable::file_text;
 use crate::ui::text::{fit, width};
 
 pub struct DiffView {
@@ -30,8 +31,9 @@ fn line_group(line: &str) -> &'static str {
     }
 }
 
-fn lines_of(text: &str) -> Vec<&str> {
-    text.strip_suffix('\n').unwrap_or(text).split('\n').collect()
+/// The diff's lines, each as `file_text` draws it: a file's escape sequences are shown, never sent to the terminal.
+fn lines_of(text: &str) -> Vec<String> {
+    text.strip_suffix('\n').unwrap_or(text).split('\n').map(file_text).collect()
 }
 
 pub fn unified_view(text: &str) -> DiffView {
@@ -90,6 +92,7 @@ pub fn split_view(text: &str, w: usize) -> DiffView {
     };
 
     for line in lines_of(text) {
+        let line = line.as_str();
         if line.starts_with("diff --git") {
             flush(&mut lines, &mut dels, &mut adds);
             if !lines.is_empty() {
@@ -162,5 +165,16 @@ mod tests {
         assert!(text[7].contains("│   11 ten and a half"), "{:?}", text[7]);
         assert_eq!(v.lines[7][0].1, "NonText", "nothing on the left");
         assert!(text.iter().all(|t| width(t) <= 63));
+    }
+
+    #[test]
+    fn a_files_escape_sequences_are_shown_as_text() {
+        let evil = "A\x1b]52;c;UFdORUQ=\x07B\x1b[2JC\u{9d}0;T\u{9c}D\u{202e}E";
+        let diff = format!("diff --git a/e b/e\n--- a/e\n+++ b/e\n@@ -1 +1 @@ {evil}\n-{evil}\n+{evil}\r\n");
+        for v in [unified_view(&diff), split_view(&diff, 200)] {
+            let text: String = v.lines.iter().map(plain).collect::<Vec<_>>().join("\n");
+            assert!(!text.chars().any(|c| c != '\n' && crate::printable::is_unsafe(c)), "{text:?}");
+            assert!(text.contains("A\\x1b]52;c;UFdORUQ=\\x07B\\x1b[2JC\\x9d0;T\\x9cD\\u202eE"), "{text:?}");
+        }
     }
 }

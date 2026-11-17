@@ -10,6 +10,7 @@ import { type Component, truncateToWidth, visibleWidth } from "./tui.js";
 import type { FileDiff, Hunk } from "./hunks.js";
 import { patchFor } from "./hunks.js";
 import { keyFromInput } from "./keys.js";
+import { fileText } from "./printable.js";
 import type { PickerIcons } from "./picker.js";
 import { type Painter, RESET } from "./theme.js";
 
@@ -59,13 +60,13 @@ export class HunkReview implements Component {
 		const out: Row[] = [];
 		this.files.forEach((file, fi) => {
 			const n = file.hunks.length;
-			out.push({ text: `${file.path}  ${file.binary ? "(binary: X drops it)" : `${n} hunk${n === 1 ? "" : "s"}`}`, group: "Title", hunk: -1, header: true });
+			out.push({ text: `${fileText(file.path)}  ${file.binary ? "(binary: X drops it)" : `${n} hunk${n === 1 ? "" : "s"}`}`, group: "Title", hunk: -1, header: true });
 			for (const hunk of file.hunks) {
 				const idx = this.flat.findIndex((h) => h.hunk === hunk && h.fileIdx === fi);
-				out.push({ text: hunk.header, group: "Special", hunk: idx, header: true });
+				out.push({ text: fileText(hunk.header), group: "Special", hunk: idx, header: true });
 				for (const l of hunk.lines) {
 					out.push({
-						text: truncateToWidth(l.replace(/\t/g, "  "), width, "…"),
+						text: truncateToWidth(fileText(l), width, "…"),
 						group: l.startsWith("+") ? "Added" : l.startsWith("-") ? "Removed" : l.startsWith("\\") ? "Comment" : "NormalFloat",
 						hunk: idx,
 					});

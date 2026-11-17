@@ -10,6 +10,7 @@
 import { truncateToWidth, visibleWidth } from "./tui.js";
 import type { FloatLine } from "./float.js";
 import { fileIcon } from "./icons.js";
+import { fileText } from "./printable.js";
 
 export interface DiffView {
 	lines: FloatLine[];
@@ -25,8 +26,13 @@ function lineGroup(line: string): string {
 	return "NormalFloat";
 }
 
+/** The diff's lines, each as fileText draws it: a file's escape sequences are shown, never sent to the terminal. */
+function linesOf(text: string): string[] {
+	return text.replace(/\n$/, "").split("\n").map(fileText);
+}
+
 export function unifiedView(text: string): DiffView {
-	const raw = text.replace(/\n$/, "").split("\n");
+	const raw = linesOf(text);
 	return {
 		lines: raw.map((l) => [[lineGroup(l), l]]),
 		jumps: raw.map((l, i) => (l.startsWith("@@") ? i : -1)).filter((i) => i >= 0),
@@ -61,7 +67,7 @@ export function splitView(text: string, width: number, icons = false): DiffView 
 		adds = [];
 	};
 
-	for (const line of text.replace(/\n$/, "").split("\n")) {
+	for (const line of linesOf(text)) {
 		if (line.startsWith("diff --git")) {
 			flush();
 			if (lines.length > 0) lines.push([]);

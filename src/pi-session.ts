@@ -29,6 +29,7 @@ import {
 	usageTokens,
 } from "./session.js";
 import { LineSplitter } from "./lines.js";
+import { oneLine as plainLine } from "./printable.js";
 import { flattenTree, type TreeGlyphs, type TreeNodeLike, type TreeRow } from "./tree.js";
 import type { WorktreeInfo } from "./worktree.js";
 
@@ -174,7 +175,7 @@ export class PiSession extends Session {
 		if (!state) return;
 		this.sessionFile = state.sessionFile ?? this.sessionFile;
 		const m = state.model;
-		if (m?.id && m.id !== "unknown" && (!this.model || this.model === "default" || this.model === "pi")) this.model = m.provider ? `${m.provider}/${m.id}` : m.id;
+		if (m?.id && m.id !== "unknown" && (!this.model || this.model === "default" || this.model === "pi")) this.model = plainLine(m.provider ? `${m.provider}/${m.id}` : String(m.id)) || this.model;
 		if (state.thinkingLevel && state.thinkingLevel !== "off") this.effort = state.thinkingLevel;
 		this.emit();
 	}

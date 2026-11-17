@@ -4,7 +4,7 @@
  * Type to filter, arrows / Ctrl-n / Ctrl-p / Tab to move (each move previews
  * the theme live), Enter to keep it, Esc to go back to the previous theme.
  */
-import { type Component, fuzzyFilter, parseKey, truncateToWidth, visibleWidth } from "./tui.js";
+import { type Component, fuzzyFilter, parseKey, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "./tui.js";
 import { type Painter, RESET, sgr } from "./theme.js";
 
 /** What the picker shows next to a theme's name: its colors, and dark / light / transparent. */
@@ -246,6 +246,14 @@ export interface ChoicePickerOptions {
 	onBackOut?: () => void;
 	/** how many choices show at once */
 	rows?: number;
+	/**
+	 * Text above the list that the choices are about, every word of it shown:
+	 * each entry wraps to the picker's width. Past `detailRows` rows it
+	 * scrolls (Ctrl-d / Ctrl-u, Ctrl-e / Ctrl-y).
+	 */
+	details?: string[];
+	/** the most rows the details take (default 10) */
+	detailRows?: number;
 }
 
 /**
@@ -264,6 +272,11 @@ export class ChoicePicker implements Component {
 	private loading = true;
 	private onBackOut?: () => void;
 	private rows: number;
+	private details: string[];
+	private detailRows: number;
+	private detailTop = 0;
+	/** the details' rows at the last width drawn */
+	private detailLines: string[] = [];
 
 	constructor(
 		private painter: Painter,
@@ -279,6 +292,8 @@ export class ChoicePicker implements Component {
 		this.searching = opts.search ?? false;
 		this.rows = opts.rows ?? VISIBLE;
 		this.onBackOut = opts.onBackOut;
+		this.details = opts.details ?? [];
+		this.detailRows = Math.max(2, opts.detailRows ?? 10);
 		Promise.resolve(items)
 			.then((list) => {
 				this.items = list;
@@ -334,7 +349,11 @@ export class ChoicePicker implements Component {
 		}
 		if (["down", "tab", "ctrl+n", "ctrl+j"].includes(key)) move(1);
 		else if (["up", "shift+tab", "ctrl+p", "ctrl+k"].includes(key)) move(-1);
-		else if (this.searching) {
+		else if (this.details.length && !this.searching && ["ctrl+d", "ctrl+u", "ctrl+e", "ctrl+y"].includes(key)) {
+			const half = Math.max(1, Math.floor(this.detailRows / 2));
+			const by = { "ctrl+d": half, "ctrl+u": -half, "ctrl+e": 1, "ctrl+y": -1 }[key] ?? 0;
+			this.detailTop = Math.max(0, Math.min(this.detailTop + by, this.detailLines.length - this.detailRows + 1));
+		} else if (this.searching) {
 			if (key === "escape") this.searching = false; // the filter stays; j/k move through it
 			else if (key === "backspace") {
 				if (this.query) this.query = this.query.slice(0, -1);
@@ -393,6 +412,20 @@ export class ChoicePicker implements Component {
 		const items = this.filtered();
 		const title = truncateToWidth(` ${this.title} `, Math.max(0, inner - 2), "…");
 		const lines = [border(I.tl + I.h) + P.on("FloatTitle", bg) + title + RESET + border(I.h.repeat(Math.max(0, inner - 1 - visibleWidth(title))) + I.tr)];
+		if (this.details.length) {
+			this.detailLines = this.details.flatMap((d) => wrapTextWithAnsi(d, inner - 2));
+			const all = this.detailLines;
+			// the last row says where in them you are when they don't all fit
+			const fits = all.length <= this.detailRows;
+			const room = fits ? all.length : this.detailRows - 1;
+			this.detailTop = Math.max(0, Math.min(this.detailTop, all.length - room));
+			for (const l of all.slice(this.detailTop, this.detailTop + room)) lines.push(row(P.on("NormalFloat", bg) + ` ${l}` + RESET, 1 + visibleWidth(l)));
+			if (!fits) {
+				const where = truncateToWidth(` rows ${this.detailTop + 1}-${this.detailTop + room} of ${all.length} · Ctrl-d/Ctrl-u scroll`, inner, "…");
+				lines.push(row(P.on("Comment", bg) + where + RESET, visibleWidth(where)));
+			}
+			lines.push(border(I.lt + I.h.repeat(inner) + I.rt));
+		}
 		if (this.searching) {
 			lines.push(row(P.on("Title", bg) + ` ${I.prompt} ` + RESET + P.on("NormalFloat", bg) + this.query + P.on("PmenuSel", undefined) + " " + RESET, visibleWidth(this.query) + 4));
 		} else {

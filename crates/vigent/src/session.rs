@@ -465,7 +465,13 @@ impl Session {
                     }
                 }
                 Ev::Message(id) => self.last_message = Some(id),
-                Ev::Model(m) => self.model = Some(m),
+                // the CLI's name for it, drawn in the winbar, statusline and sidebar
+                Ev::Model(m) => {
+                    let m = crate::printable::one_line(&m);
+                    if !m.is_empty() {
+                        self.model = Some(m);
+                    }
+                }
                 Ev::TextDelta(t) => match self.streaming {
                     Some(j) => {
                         if let Some(Item::Text(s)) = self.items.get_mut(j) {
@@ -645,6 +651,15 @@ mod tests {
         s.items.push(Item::User("again".into()));
         s.apply(vec![Ev::Tool { id: "t".into(), name: "Write".into(), summary: "/y".into() }], true);
         assert!(matches!(s.items.last(), Some(Item::Tool { summary, .. }) if summary == "/y"));
+    }
+
+    #[test]
+    fn a_model_name_the_cli_reports_keeps_no_escape_sequences() {
+        let mut s = Session::new(0, "m", "claude", "/nope".into());
+        s.apply(vec![Ev::Model("m-MODEL\x1b]0;TITLE\x07\u{9d}0;C\u{9c}\u{202e}x".into())], true);
+        assert_eq!(s.model.as_deref(), Some("m-MODEL0;Cx"));
+        s.apply(vec![Ev::Model("\x1b]0;x\x07".into())], true);
+        assert_eq!(s.model.as_deref(), Some("m-MODEL0;Cx"), "nothing left: the name stays");
     }
 
     #[test]
