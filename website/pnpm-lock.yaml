@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       '@farm.js/core':
-        specifier: 0.1.63
-        version: 0.1.63(@farming-labs/docs@0.2.143(react@19.3.1))(@tailwindcss/vite@4.3.5(vite@8.3.4(jiti@2.7.0)(yaml@2.9.1)))(crossws@0.4.17(srvx@1.0.8))(jiti@2.7.0)(ocache@0.3.1)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(yaml@2.9.1)
+        specifier: 0.1.80
+        version: 0.1.80(@farming-labs/docs@0.2.143(react@19.3.1))(@tailwindcss/vite@4.3.5(vite@8.3.4(@types/node@26.6.6)(jiti@2.7.0)(yaml@2.9.1)))(@types/node@26.6.6)(crossws@0.4.17(srvx@1.0.8))(jiti@2.7.0)(ocache@0.3.1)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(yaml@2.9.1)
       '@fontsource-variable/jetbrains-mono':
         specifier: ^5.3.0
         version: 5.3.0
@@ -22,11 +22,11 @@ importers:
         version: 19.3.1(react@19.3.1)
     devDependencies:
       '@farm.js/cli':
-        specifier: 0.1.63
-        version: 0.1.63(@farming-labs/docs@0.2.143(react@19.3.1))(@tailwindcss/vite@4.3.5(vite@8.3.4(jiti@2.7.0)(yaml@2.9.1)))(crossws@0.4.17(srvx@1.0.8))(jiti@2.7.0)(ocache@0.3.1)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(yaml@2.9.1)
+        specifier: 0.1.80
+        version: 0.1.80(@farming-labs/docs@0.2.143(react@19.3.1))(@tailwindcss/vite@4.3.5(vite@8.3.4(@types/node@26.6.6)(jiti@2.7.0)(yaml@2.9.1)))(@types/node@26.6.6)(crossws@0.4.17(srvx@1.0.8))(jiti@2.7.0)(ocache@0.3.1)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(yaml@2.9.1)
       '@farm.js/devtools':
-        specifier: 0.1.63
-        version: 0.1.63(@farm.js/core@0.1.63(@farming-labs/docs@0.2.143(react@19.3.1))(@tailwindcss/vite@4.3.5(vite@8.3.4(jiti@2.7.0)(yaml@2.9.1)))(crossws@0.4.17(srvx@1.0.8))(jiti@2.7.0)(ocache@0.3.1)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(yaml@2.9.1))
+        specifier: 0.1.80
+        version: 0.1.80(@farm.js/core@0.1.80(@farming-labs/docs@0.2.143(react@19.3.1))(@tailwindcss/vite@4.3.5(vite@8.3.4(@types/node@26.6.6)(jiti@2.7.0)(yaml@2.9.1)))(@types/node@26.6.6)(crossws@0.4.17(srvx@1.0.8))(jiti@2.7.0)(ocache@0.3.1)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(yaml@2.9.1))
       '@types/react':
         specifier: ^19.0.0
         version: 19.3.0
@@ -62,13 +62,13 @@ packages:
   '@emnapi/wasi-threads@2.2.0':
     resolution: {integrity: sha512-JP7OYH38Q7+pyTAe14raZHLQIK7BDKbdwji+Xi3pcd/6QkJYQH3SX4wu6EplGrGJWRepoNzedfm0G3B9Z4e9Rw==}
 
-  '@farm.js/cli@0.1.63':
-    resolution: {integrity: sha512-opII6bZS4jaUzb4T5jicP/1KI0ZgtHiQy2DRkGRmxkg1bgtKQp5+E9GmGh5gf2/Y+eErmsCZb0uqgawwImZwvw==}
+  '@farm.js/cli@0.1.80':
+    resolution: {integrity: sha512-keV4WBpAtoFYCxQ4N2IWkWmQYl1NwzGp1AOtYQSnrtMbjN7S7vQ6GrAo5goO+4xnbTIdc8KRzr692AesmrmV8A==}
     engines: {node: '>=22.13.0'}
     hasBin: true
 
-  '@farm.js/core@0.1.63':
-    resolution: {integrity: sha512-dWKodkcqRE66Ob0y/EPNzHHiTk5uXjo/QRNuXqcWiwBbm+zAQHGLXjSUdh6r05GFHjrb1jOsbPSN+eCeP4kdmg==}
+  '@farm.js/core@0.1.80':
+    resolution: {integrity: sha512-BxljQ5FeOpTI4AA/UjanHwhB/Hg3dcRGWN8Sky1Id9RWm4yRKj/dxbhs5l4pKUCiMHIao/iH/DNzRUEyEDUx1A==}
     engines: {node: '>=22.13.0'}
     peerDependencies:
       '@farming-labs/docs': ^0.2.118
@@ -91,14 +91,14 @@ packages:
       sharp:
         optional: true
 
-  '@farm.js/devtools@0.1.63':
-    resolution: {integrity: sha512-B9R1TFEuj+LWLoPhlhjlX+fZVQ/VbfnZUhIHELP/OYwo2DTBo1ehQmW+k+WKvA4j/ZCFZv5zolCXyXz64QCEsA==}
+  '@farm.js/devtools@0.1.80':
+    resolution: {integrity: sha512-g6KtbHgcuwZLA5BiESdQJNRmJg3LjESVCi5HztQp3QIrc6E7VNi5qg+Sp530lgHfW+5t9nWRs/TWzXOnXHWwhA==}
     engines: {node: '>=22.13.0'}
     peerDependencies:
       '@farm.js/core': '>=0.1.28 <0.2.0'
 
-  '@farm.js/islx@0.0.9':
-    resolution: {integrity: sha512-/mBE6KOBpes3rA1oTnMh19r75R/HCDXSbfom54vtxt0/03Ls5zdyfxIiuRJdhUFrpP0o58pYIOdSSyRA71JFcw==}
+  '@farm.js/islx@0.0.25':
+    resolution: {integrity: sha512-sB8efeUkS6N4MIY8yStxOTqjDi7EaBPiokKTPETj0Z1ImDuJa4aenvrn8dA4sRPvmoXTYAj8JKk93NHK9sQBVA==}
     engines: {node: ^20.19.0 || >=22.12.0}
     peerDependencies:
       '@tanstack/react-router': '>=1.170'
@@ -342,6 +342,15 @@ packages:
 
   '@jridgewell/trace-mapping@0.3.31':
     resolution: {integrity: sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw==}
+
+  '@libsql/core@0.17.4':
+    resolution: {integrity: sha512-LqF9gIvnJ38nmAH1y/ChizHqDO/MO1wLgA96XrraulEEbqXxLjleSH92YWTolbuJKgPUmGu4aJk9W3UnAcxLOQ==}
+
+  '@libsql/hrana-client@0.10.0':
+    resolution: {integrity: sha512-OoA4EMqRAC7kn7V2P6EQqRcpZf2W+AjsNIyCizBg339Tq/aMC7sRnzs3SklderhmQWAqEzvv8A2vhxVmWpkVvw==}
+
+  '@libsql/isomorphic-ws@0.1.5':
+    resolution: {integrity: sha512-DtLWIH29onUYR00i0GlQ3UdcTRC6EP4u9w/h9LxpUZJWRMARk6dQwZ6Jkd+QdwVpuAOrdxt18v0K2uIYR3fwFg==}
 
   '@mdx-js/mdx@3.1.1':
     resolution: {integrity: sha512-f6ZO2ifpwAQIpzGWaBQT2TXxPv6z3RBzQKpVftEWN78Vl/YweF1uwussDx8ECAXVtr3Rs89fKyG9YlzUs9DyGQ==}
@@ -688,6 +697,9 @@ packages:
   '@types/ms@2.1.0':
     resolution: {integrity: sha512-GsCCIZDE/p3i96vtEqx+7dBUGXrc7zeSK3wwPHIaRThS+9OhWIXRqzs4d6k1SVU8g91DrNRWxWUGhp5KXQb2VA==}
 
+  '@types/node@26.6.6':
+    resolution: {integrity: sha512-MzQj+8Kx3XI40OmUAE6Qoh58ZMNstNNMwn2nfd3qWsfe7nDNSqJNzes4njhz6AHwrSHOffSLwXU6yb474Q4aog==}
+
   '@types/react-dom@19.3.0':
     resolution: {integrity: sha512-ZI7bU42mZXXKHn/qNLEw2IrbiINU7X5+vfgdixBHkCNpYWXjKgfQ/P+uyGb5CjOLB9UcnTeg3rylQtV2hym44Q==}
     peerDependencies:
@@ -701,6 +713,9 @@ packages:
 
   '@types/unist@3.0.3':
     resolution: {integrity: sha512-ko/gIFJRv177XgZsZcBwnqJN5x/Gien8qNOn0D5bQU/zAzVf9Zt3BlcUiLqhV9y4ARk0GbT3tnUiPNgnTXzc/Q==}
+
+  '@types/ws@8.18.2':
+    resolution: {integrity: sha512-67MQl+fpWKVTT1NYdnmo3U4sc/xPo/zQBncVnI74qmQa0z/b+1g6iYqNmGCPbxO+zz2aklb08a0oHfegiVd0/w==}
 
   '@ungap/structured-clone@1.4.0':
     resolution: {integrity: sha512-1mEZtMKPM09vDmQt5y7YvmN2+DFTP7Tg0EWXdic8/C6VRnpb33e4ghisCIE3WZjsE2N8mf+QV1Zqh7ZFYLWInQ==}
@@ -955,9 +970,9 @@ packages:
   h3@1.15.11:
     resolution: {integrity: sha512-L3THSe2MPeBwgIZVSH5zLdBBU90TOxarvhK9d04IDY2AmVS8j2Jz2LIWtwsGOU3lu2I5jCN7FNvVfY2+XyF+mg==}
 
-  h3@2.0.1-rc.32:
-    resolution: {integrity: sha512-Epg1E85L8yIKd9UeAQAVdm6QVrnHbppMsQ641EjpNi4c0IlAg+PJlwp4Xw03Z1loRXPQaH9k64gJT5qDELqm+g==}
-    engines: {node: '>=20.11.1'}
+  h3@2.0.8:
+    resolution: {integrity: sha512-ENuKlF9kC6E6PrvY1PUyE0qkrnnPTIt2/v48uyEEfTVfgoiqBCE0uwwf++2XrWwT1gxjQBDLQ8PAsmZVniKvTw==}
+    engines: {node: '>=20.19.0'}
     hasBin: true
     peerDependencies:
       crossws: ^0.4.12
@@ -1026,6 +1041,9 @@ packages:
   jiti@2.7.0:
     resolution: {integrity: sha512-AC/7JofJvZGrrneWNaEnJeOLUx+JlGt7tNa0wZiRPT4MY1wmfKjt2+6O2p2uz2+skll8OZZmJMNqeke7kKbNgQ==}
     hasBin: true
+
+  js-base64@3.9.7:
+    resolution: {integrity: sha512-UT2XYOCbXOXYoymbytretRDFnb6E6vYPqC1blehA/alnG6vRC0mNTQ6ijXYAPtiCG9o1FDNJXJvQtCwbChFDRQ==}
 
   js-yaml@3.15.2:
     resolution: {integrity: sha512-6EuL879VkRA+1Cz578mKMiKvjPNEuk6+r1JaFzoSWejZmtf7xWbIyw1e3KkxlkzTIt9Taw6JBhEppG7utc1P+w==}
@@ -1401,6 +1419,9 @@ packages:
     resolution: {integrity: sha512-9ZhXKM/rw350N1ovuWHbGxnGh/SNJ4cnxHiM0rxE4VN41wsg8P8zWn9hv/buK00RP4WvlOyr/RBDiptyxVbkZQ==}
     engines: {node: '>=0.10.0'}
 
+  promise-limit@2.7.0:
+    resolution: {integrity: sha512-7nJ6v5lnJsXwGprnGXga4wx6d1POjvi5Qmf1ivTRxTjH4Z/9Czja/UCMLVmB9N93GeWOU93XaFaEt6jbuoagNw==}
+
   property-information@7.2.0:
     resolution: {integrity: sha512-IAtzIB6sUiWaJYrX9smp3V46pBGbBeLFRGdh25kg1334VcBlD8HzhPeNIWQH9zhGmo2itIe25EHt9dQP7G5hmg==}
 
@@ -1464,6 +1485,10 @@ packages:
 
   rou3@0.9.2:
     resolution: {integrity: sha512-3SOzvaAg8rkHrXtRjpCvCvbyO5to9oOO27Z/XqHEYXfMRVSw/qMIVdmaOk9W2lcRLtR6dlqTjo9hDeJk70QBYQ==}
+
+  rou3@1.0.0:
+    resolution: {integrity: sha512-ySeaQkSrua+ut9g+65I7FHqOFBaY8tV0FmccXItoq0q21se32Q3u4YiW7/RqXSosWgYJaaKwRHXy3BST9PeCNQ==}
+    engines: {node: '>=20.19.0'}
 
   scheduler@0.28.0:
     resolution: {integrity: sha512-juorfCmIkIw8tT+p5BXSm6PJjQF/ycEYmKyzURCIt/RaZIhL+PulbQ9Yu2z1HdOJDdqDTlxA1+xKBmHXJsczAw==}
@@ -1562,6 +1587,9 @@ packages:
 
   uncrypto@0.1.3:
     resolution: {integrity: sha512-Ql87qFHB3s/De2ClA9e0gsnS6zXG27SkTiSJwjCc9MebbfapQfuPzumMIUMi38ezPZVNFcHI9sUIepeQfw8J8Q==}
+
+  undici-types@8.9.0:
+    resolution: {integrity: sha512-KTDyRTYX8sWmKXAikPHHSyc63CRPETMctyjKFupcC6OBLXT3xsN0e9aF7m+mIXutFWpUXuedtowG7iLOzp0kQg==}
 
   unenv@2.0.0-rc.24:
     resolution: {integrity: sha512-i7qRCmY42zmCwnYlh9H2SvLEypEFGye5iRmEMKjcGi7zk9UquigRjFtTLz0TYqr0ZGLZhaMHl/foy1bZR+Cwlw==}
@@ -1701,6 +1729,18 @@ packages:
       yaml:
         optional: true
 
+  ws@8.23.0:
+    resolution: {integrity: sha512-wCkmX8QMOrKjgO8HW2WyDbTSGeqkocxgDzS9iR79rEAexty6/2qzilx3Ag8Tqf9ykop3irLKle0MtVn5qjVnoQ==}
+    engines: {node: '>=10.0.0'}
+    peerDependencies:
+      bufferutil: ^4.0.1
+      utf-8-validate: '>=5.0.2'
+    peerDependenciesMeta:
+      bufferutil:
+        optional: true
+      utf-8-validate:
+        optional: true
+
   xtend@4.0.2:
     resolution: {integrity: sha512-LKYU1iAXJXUgAXn9URjiu+MWhyUXHsvfp7mcuYm9dSUKK0/CjtrUwFAxD82/mCWbtLsGjFIad0wIsod4zrTAEQ==}
     engines: {node: '>=0.4'}
@@ -1757,9 +1797,9 @@ snapshots:
       tslib: 2.9.1
     optional: true
 
-  '@farm.js/cli@0.1.63(@farming-labs/docs@0.2.143(react@19.3.1))(@tailwindcss/vite@4.3.5(vite@8.3.4(jiti@2.7.0)(yaml@2.9.1)))(crossws@0.4.17(srvx@1.0.8))(jiti@2.7.0)(ocache@0.3.1)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(yaml@2.9.1)':
+  '@farm.js/cli@0.1.80(@farming-labs/docs@0.2.143(react@19.3.1))(@tailwindcss/vite@4.3.5(vite@8.3.4(@types/node@26.6.6)(jiti@2.7.0)(yaml@2.9.1)))(@types/node@26.6.6)(crossws@0.4.17(srvx@1.0.8))(jiti@2.7.0)(ocache@0.3.1)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(yaml@2.9.1)':
     dependencies:
-      '@farm.js/core': 0.1.63(@farming-labs/docs@0.2.143(react@19.3.1))(@tailwindcss/vite@4.3.5(vite@8.3.4(jiti@2.7.0)(yaml@2.9.1)))(crossws@0.4.17(srvx@1.0.8))(jiti@2.7.0)(ocache@0.3.1)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(yaml@2.9.1)
+      '@farm.js/core': 0.1.80(@farming-labs/docs@0.2.143(react@19.3.1))(@tailwindcss/vite@4.3.5(vite@8.3.4(@types/node@26.6.6)(jiti@2.7.0)(yaml@2.9.1)))(@types/node@26.6.6)(crossws@0.4.17(srvx@1.0.8))(jiti@2.7.0)(ocache@0.3.1)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(yaml@2.9.1)
       '@farm.js/tunnel': 0.1.2
       commander: 11.1.0
       croner: 9.1.0
@@ -1797,6 +1837,7 @@ snapshots:
       - aws4fetch
       - babel-plugin-react-compiler
       - better-sqlite3
+      - bufferutil
       - crossws
       - drizzle-orm
       - esbuild
@@ -1825,39 +1866,44 @@ snapshots:
       - tsx
       - typeorm
       - uploadthing
+      - utf-8-validate
       - yaml
 
-  '@farm.js/core@0.1.63(@farming-labs/docs@0.2.143(react@19.3.1))(@tailwindcss/vite@4.3.5(vite@8.3.4(jiti@2.7.0)(yaml@2.9.1)))(crossws@0.4.17(srvx@1.0.8))(jiti@2.7.0)(ocache@0.3.1)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(yaml@2.9.1)':
+  '@farm.js/core@0.1.80(@farming-labs/docs@0.2.143(react@19.3.1))(@tailwindcss/vite@4.3.5(vite@8.3.4(@types/node@26.6.6)(jiti@2.7.0)(yaml@2.9.1)))(@types/node@26.6.6)(crossws@0.4.17(srvx@1.0.8))(jiti@2.7.0)(ocache@0.3.1)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(yaml@2.9.1)':
     dependencies:
-      '@farm.js/islx': 0.0.9(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(vite@8.3.4(jiti@2.7.0)(yaml@2.9.1))
+      '@farm.js/islx': 0.0.25(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(vite@8.3.4(@types/node@26.6.6)(jiti@2.7.0)(yaml@2.9.1))
       '@farming-labs/orm': 0.0.66
       '@farming-labs/orm-runtime': 0.0.66(db0@0.3.4)
+      '@farming-labs/orm-sql': 0.0.66
       '@formatjs/icu-messageformat-parser': 3.5.15
       '@jridgewell/trace-mapping': 0.3.31
+      '@libsql/core': 0.17.4
+      '@libsql/hrana-client': 0.10.0
       '@mdx-js/mdx': 3.1.1(supports-color@10.2.2)
       '@opentelemetry/api': 1.9.1
-      '@vitejs/plugin-react': 6.1.2(vite@8.3.4(jiti@2.7.0)(yaml@2.9.1))
+      '@vitejs/plugin-react': 6.1.2(vite@8.3.4(@types/node@26.6.6)(jiti@2.7.0)(yaml@2.9.1))
       better-call: 1.4.5(zod@4.6.7)
       db0: 0.3.4
       es-module-lexer: 2.0.0
-      h3: 2.0.1-rc.32(crossws@0.4.17(srvx@1.0.8))(ocache@0.3.1)
+      h3: 2.0.8(crossws@0.4.17(srvx@1.0.8))(ocache@0.3.1)
       image-size: 2.1.0
       intl-messageformat: 11.2.12
       marked: 12.0.2
       nitro: 3.0.260903-beta
       pg: 8.23.1
       picocolors: 1.1.1
+      promise-limit: 2.7.0
       remark-gfm: 4.0.1(supports-color@10.2.2)
       rolldown: 1.3.0
       sugar-high: 0.9.5
       supports-color: 10.2.2
       tinyglobby: 0.2.17
       unstorage: 2.0.0-alpha.10
-      vite: 8.3.4(jiti@2.7.0)(yaml@2.9.1)
+      vite: 8.3.4(@types/node@26.6.6)(jiti@2.7.0)(yaml@2.9.1)
       zod: 4.6.7
     optionalDependencies:
       '@farming-labs/docs': 0.2.143(react@19.3.1)
-      '@tailwindcss/vite': 4.3.5(vite@8.3.4(jiti@2.7.0)(yaml@2.9.1))
+      '@tailwindcss/vite': 4.3.5(vite@8.3.4(@types/node@26.6.6)(jiti@2.7.0)(yaml@2.9.1))
       react: 19.3.1
       react-dom: 19.3.1(react@19.3.1)
     transitivePeerDependencies:
@@ -1890,6 +1936,7 @@ snapshots:
       - aws4fetch
       - babel-plugin-react-compiler
       - better-sqlite3
+      - bufferutil
       - crossws
       - drizzle-orm
       - esbuild
@@ -1915,14 +1962,15 @@ snapshots:
       - tsx
       - typeorm
       - uploadthing
+      - utf-8-validate
       - yaml
 
-  '@farm.js/devtools@0.1.63(@farm.js/core@0.1.63(@farming-labs/docs@0.2.143(react@19.3.1))(@tailwindcss/vite@4.3.5(vite@8.3.4(jiti@2.7.0)(yaml@2.9.1)))(crossws@0.4.17(srvx@1.0.8))(jiti@2.7.0)(ocache@0.3.1)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(yaml@2.9.1))':
+  '@farm.js/devtools@0.1.80(@farm.js/core@0.1.80(@farming-labs/docs@0.2.143(react@19.3.1))(@tailwindcss/vite@4.3.5(vite@8.3.4(@types/node@26.6.6)(jiti@2.7.0)(yaml@2.9.1)))(@types/node@26.6.6)(crossws@0.4.17(srvx@1.0.8))(jiti@2.7.0)(ocache@0.3.1)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(yaml@2.9.1))':
     dependencies:
-      '@farm.js/core': 0.1.63(@farming-labs/docs@0.2.143(react@19.3.1))(@tailwindcss/vite@4.3.5(vite@8.3.4(jiti@2.7.0)(yaml@2.9.1)))(crossws@0.4.17(srvx@1.0.8))(jiti@2.7.0)(ocache@0.3.1)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(yaml@2.9.1)
+      '@farm.js/core': 0.1.80(@farming-labs/docs@0.2.143(react@19.3.1))(@tailwindcss/vite@4.3.5(vite@8.3.4(@types/node@26.6.6)(jiti@2.7.0)(yaml@2.9.1)))(@types/node@26.6.6)(crossws@0.4.17(srvx@1.0.8))(jiti@2.7.0)(ocache@0.3.1)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(yaml@2.9.1)
       '@fontsource-variable/geist-mono': 5.3.0
 
-  '@farm.js/islx@0.0.9(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(vite@8.3.4(jiti@2.7.0)(yaml@2.9.1))':
+  '@farm.js/islx@0.0.25(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(vite@8.3.4(@types/node@26.6.6)(jiti@2.7.0)(yaml@2.9.1))':
     dependencies:
       estree-walker: 3.0.3
       is-reference: 3.0.3
@@ -1931,7 +1979,7 @@ snapshots:
     optionalDependencies:
       react: 19.3.1
       react-dom: 19.3.1(react@19.3.1)
-      vite: 8.3.4(jiti@2.7.0)(yaml@2.9.1)
+      vite: 8.3.4(@types/node@26.6.6)(jiti@2.7.0)(yaml@2.9.1)
 
   '@farm.js/tunnel-darwin-arm64@0.1.2':
     optional: true
@@ -2193,6 +2241,26 @@ snapshots:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.6.0
 
+  '@libsql/core@0.17.4':
+    dependencies:
+      js-base64: 3.9.7
+
+  '@libsql/hrana-client@0.10.0':
+    dependencies:
+      '@libsql/isomorphic-ws': 0.1.5
+      js-base64: 3.9.7
+    transitivePeerDependencies:
+      - bufferutil
+      - utf-8-validate
+
+  '@libsql/isomorphic-ws@0.1.5':
+    dependencies:
+      '@types/ws': 8.18.2
+      ws: 8.23.0
+    transitivePeerDependencies:
+      - bufferutil
+      - utf-8-validate
+
   '@mdx-js/mdx@3.1.1(supports-color@10.2.2)':
     dependencies:
       '@types/estree': 1.0.10
@@ -2427,12 +2495,12 @@ snapshots:
       '@tailwindcss/oxide-win32-x64-msvc': 4.3.5
     optional: true
 
-  '@tailwindcss/vite@4.3.5(vite@8.3.4(jiti@2.7.0)(yaml@2.9.1))':
+  '@tailwindcss/vite@4.3.5(vite@8.3.4(@types/node@26.6.6)(jiti@2.7.0)(yaml@2.9.1))':
     dependencies:
       '@tailwindcss/node': 4.3.5
       '@tailwindcss/oxide': 4.3.5
       tailwindcss: 4.3.5
-      vite: 8.3.4(jiti@2.7.0)(yaml@2.9.1)
+      vite: 8.3.4(@types/node@26.6.6)(jiti@2.7.0)(yaml@2.9.1)
     optional: true
 
   '@tybys/wasm-util@0.10.4':
@@ -2462,6 +2530,10 @@ snapshots:
 
   '@types/ms@2.1.0': {}
 
+  '@types/node@26.6.6':
+    dependencies:
+      undici-types: 8.9.0
+
   '@types/react-dom@19.3.0(@types/react@19.3.0)':
     dependencies:
       '@types/react': 19.3.0
@@ -2474,12 +2546,16 @@ snapshots:
 
   '@types/unist@3.0.3': {}
 
+  '@types/ws@8.18.2':
+    dependencies:
+      '@types/node': 26.6.6
+
   '@ungap/structured-clone@1.4.0': {}
 
-  '@vitejs/plugin-react@6.1.2(vite@8.3.4(jiti@2.7.0)(yaml@2.9.1))':
+  '@vitejs/plugin-react@6.1.2(vite@8.3.4(@types/node@26.6.6)(jiti@2.7.0)(yaml@2.9.1))':
     dependencies:
       '@rolldown/pluginutils': 1.0.1
-      vite: 8.3.4(jiti@2.7.0)(yaml@2.9.1)
+      vite: 8.3.4(@types/node@26.6.6)(jiti@2.7.0)(yaml@2.9.1)
 
   acorn-jsx@5.3.2(acorn@8.19.0):
     dependencies:
@@ -2694,9 +2770,9 @@ snapshots:
       ufo: 1.6.4
       uncrypto: 0.1.3
 
-  h3@2.0.1-rc.32(crossws@0.4.17(srvx@1.0.8))(ocache@0.3.1):
+  h3@2.0.8(crossws@0.4.17(srvx@1.0.8))(ocache@0.3.1):
     dependencies:
-      rou3: 0.9.2
+      rou3: 1.0.0
       srvx: 1.0.8
     optionalDependencies:
       crossws: 0.4.17(srvx@1.0.8)
@@ -2786,6 +2862,8 @@ snapshots:
 
   jiti@2.7.0:
     optional: true
+
+  js-base64@3.9.7: {}
 
   js-yaml@3.15.2:
     dependencies:
@@ -3319,7 +3397,7 @@ snapshots:
       crossws: 0.4.17(srvx@1.0.8)
       db0: 0.4.2
       env-runner: 0.2.3
-      h3: 2.0.1-rc.32(crossws@0.4.17(srvx@1.0.8))(ocache@0.3.1)
+      h3: 2.0.8(crossws@0.4.17(srvx@1.0.8))(ocache@0.3.1)
       hookable: 6.1.2
       nf3: 0.3.24
       ocache: 0.3.1
@@ -3417,6 +3495,8 @@ snapshots:
   postgres-interval@1.2.0:
     dependencies:
       xtend: 4.0.2
+
+  promise-limit@2.7.0: {}
 
   property-information@7.2.0: {}
 
@@ -3554,6 +3634,8 @@ snapshots:
 
   rou3@0.9.2: {}
 
+  rou3@1.0.0: {}
+
   scheduler@0.28.0: {}
 
   section-matter@1.0.0:
@@ -3636,6 +3718,8 @@ snapshots:
 
   uncrypto@0.1.3: {}
 
+  undici-types@8.9.0: {}
+
   unenv@2.0.0-rc.24:
     dependencies:
       pathe: 2.0.3
@@ -3702,7 +3786,7 @@ snapshots:
       '@types/unist': 3.0.3
       vfile-message: 4.0.4
 
-  vite@8.3.4(jiti@2.7.0)(yaml@2.9.1):
+  vite@8.3.4(@types/node@26.6.6)(jiti@2.7.0)(yaml@2.9.1):
     dependencies:
       lightningcss: 1.33.0
       picomatch: 4.0.7
@@ -3710,9 +3794,12 @@ snapshots:
       rolldown: 1.2.16
       tinyglobby: 0.2.17
     optionalDependencies:
+      '@types/node': 26.6.6
       fsevents: 2.3.3
       jiti: 2.7.0
       yaml: 2.9.1
+
+  ws@8.23.0: {}
 
   xtend@4.0.2: {}
 
